@@ -1,0 +1,133 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+coverage.out
+coverage.txt
+coverage.html
+profile.out
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Dependency directories (remove if vendoring)
+vendor/
+
+# Build artifacts
+/bin/
+/build/
+/dist/
+ssghost666
+ssghost666.exe
+main
+app
+
+# Go cache and temporary files
+.gopath/
+.gocache/
+.gotmp/
+
+# IDE and Editor files
+.vscode/
+.idea/
+*.code-workspace
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.iml
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# Environment and configuration files
+.env
+.env.*
+!.env.example
+config.local.yml
+config.local.yaml
+*.local.yml
+*.local.yaml
+
+# Security scanner specific outputs
+reports/
+results/
+output/
+scan-results/
+html-reports/
+*.html.report
+scan-output*.txt
+vuln-report*.json
+
+# Browser/Chromedp artifacts
+.chromedp/
+chromedp-*
+screenshots/
+captures/
+browser-data/
+user-data-dir/
+
+# HTTP client debug/cache
+http-cache/
+request-logs/
+response-cache/
+
+# Wordlists (keep default, ignore custom)
+# internal/crawler/wordlist_default.txt is tracked
+internal/crawler/wordlist_custom*.txt
+internal/crawler/wordlist_local*.txt
+*.wordlist
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.pid
+tmp/
+temp/
+logs/
+
+# OpenAPI/Swagger temp files
+openapi-temp/
+swagger-cache/
+*.resolved.yaml
+*.resolved.json
+
+# Rate limiter state (if persisted)
+rate-limiter-state*.json
+
+# Testing and benchmarking
+testdata/local/
+benchmark-results/
+*.bench
+
+# Common artifacts
+*.bak
+*.backup
+*.orig
+*.rej
+*.patch
+
+# Archives
+*.tar
+*.tar.gz
+*.zip
+*.7z
