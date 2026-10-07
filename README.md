@@ -56,6 +56,8 @@ menyegarkan `go.sum` sesuai lingkungan Anda.
 
 ## Pemakaian
 
+![Screen Capture](https://raw.githubusercontent.com/gagaltotal/ssghost666/refs/heads/main/images/Screenshot%20from%202026-10-08%2000-12-37.png)
+
 ```bash
 ./ssghost666 -url https://app.anda.com
 ```
