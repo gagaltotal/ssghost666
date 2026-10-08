@@ -38,6 +38,13 @@ func main() {
 	term.Banner(options.Banner(), cfg.TargetURL, cfg.Depth, checksLabel(checks))
 	fmt.Fprintln(os.Stderr, "Only scan applications you own or are explicitly authorized to test.")
 
+	// Load external JS library vulnerability databases if specified
+	if cfg.JSLibsDB != "" {
+		if err := scanner.LoadDatabaseFromDirectory(cfg.JSLibsDB); err != nil {
+			term.Warn("Failed to load JS library database from %s: %v", cfg.JSLibsDB, err)
+		}
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -166,11 +173,35 @@ func main() {
 		}
 	}
 
+	// Start SSRF listener if SSRF checks are enabled and listener is not disabled
+	var ssrfListener *scanner.SSRFListener
+	if checks.SSRF && cfg.EnableSSRFListener {
+		listener, err := scanner.NewSSRFListener(0) // Port 0 = auto-select
+		if err == nil {
+			addr, err := listener.Start()
+			if err == nil {
+				ssrfListener = listener
+				term.Info("SSRF callback listener started at http://%s", addr)
+				defer func() {
+					if err := listener.Stop(); err != nil {
+						term.Warn("failed to stop SSRF listener: %v", err)
+					}
+				}()
+			} else {
+				term.Warn("failed to start SSRF listener: %v (using external callback only)", err)
+			}
+		} else {
+			term.Warn("failed to create SSRF listener: %v (using external callback only)", err)
+		}
+	}
+
 	findings := scanner.Run(ctx, cli, lim, allTargets, allCaptured, scanner.Options{
 		Checks:         checks,
 		HasAuth:        hasAuth,
 		SSRFCallback:   cfg.SSRFCallback,
+		SSRFListener:   ssrfListener,
 		BrowserConfirm: cfg.JSRender,
+		DOMXSSCheck:    cfg.DOMXSSCheck,
 		ChromePath:     cfg.ChromePath,
 		OnFinding:      func(f model.Finding) { term.FindingLive(f) },
 		OnProgress: func(s string) {

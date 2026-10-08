@@ -1,0 +1,58 @@
+{
+  "steps": [
+    {
+      "name": "Get login page and CSRF token",
+      "url": "https://example.com/login",
+      "method": "GET",
+      "extractors": [
+        {
+          "name": "CSRF Token",
+          "type": "input",
+          "pattern": "csrf_token",
+          "storeAs": "csrf",
+          "required": true
+        },
+        {
+          "name": "Session Cookie",
+          "type": "cookie",
+          "pattern": "PHPSESSID",
+          "storeAs": "cookie_PHPSESSID",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "Submit login credentials",
+      "url": "https://example.com/login",
+      "method": "POST",
+      "formData": {
+        "username": "testuser",
+        "password": "testpass123",
+        "csrf_token": "{{csrf}}"
+      },
+      "extractors": [
+        {
+          "name": "Auth Token",
+          "type": "json",
+          "pattern": "data.token",
+          "storeAs": "auth_token",
+          "required": true
+        },
+        {
+          "name": "Session Cookie",
+          "type": "cookie",
+          "pattern": "session",
+          "storeAs": "cookie_session",
+          "required": true
+        }
+      ],
+      "successText": "Login successful"
+    },
+    {
+      "name": "Verify session",
+      "url": "https://example.com/dashboard",
+      "method": "GET",
+      "successText": "Welcome"
+    }
+  ]
+}

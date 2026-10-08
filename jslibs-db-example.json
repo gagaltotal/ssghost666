@@ -1,0 +1,57 @@
+{
+  "version": "1.0",
+  "last_updated": "2026-01-15",
+  "vulnerabilities": [
+    {
+      "library": "React",
+      "fixed_version": "16.4.2",
+      "cve": "CVE-2018-6341",
+      "description": "React before 16.4.2 allows XSS via a malicious iframe or other HTML elements.",
+      "severity": "high"
+    },
+    {
+      "library": "Vue.js",
+      "major_version": 2,
+      "fixed_version": "2.6.12",
+      "cve": "CVE-2020-15168",
+      "description": "Vue.js 2.x before 2.6.12 allows XSS via dynamic v-html rendering of user-controlled data.",
+      "severity": "medium"
+    },
+    {
+      "library": "Axios",
+      "fixed_version": "0.21.1",
+      "cve": "CVE-2020-28168",
+      "description": "Axios before 0.21.1 allows SSRF via improper URL parsing.",
+      "severity": "medium"
+    },
+    {
+      "library": "Express",
+      "fixed_version": "4.17.3",
+      "cve": "CVE-2022-24999",
+      "description": "Express.js before 4.17.3 allows open redirect via malformed URLs.",
+      "severity": "medium"
+    }
+  ],
+  "library_aliases": {
+    "react": "React",
+    "react-dom": "React",
+    "vue": "Vue.js",
+    "vuejs": "Vue.js",
+    "axios": "Axios",
+    "express": "Express"
+  },
+  "version_patterns": [
+    {
+      "library": "React",
+      "pattern": "React\\s*v?(\\d+\\.\\d+\\.\\d+)"
+    },
+    {
+      "library": "Vue.js",
+      "pattern": "Vue(?:\\.js)?\\s*v?(\\d+\\.\\d+\\.\\d+)"
+    },
+    {
+      "library": "Axios",
+      "pattern": "axios\\s*v?(\\d+\\.\\d+\\.\\d+)"
+    }
+  ]
+}

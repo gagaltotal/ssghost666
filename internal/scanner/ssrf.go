@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"ssghost666/internal/httpclient"
 	"ssghost666/internal/model"
@@ -32,7 +33,7 @@ const ssrfControlHost = "http://ssghost666-unreachable-control.invalid/"
 // CheckSSRF only runs on parameters whose name suggests they hold a
 // server-fetched URL (see looksLikeURLParam), since blasting every field
 // with URL payloads is noisy and rarely meaningful.
-func CheckSSRF(ctx context.Context, lim *ratelimiter.Limiter, cli *httpclient.Client, t model.Target, p model.Param, callbackHost string) []model.Finding {
+func CheckSSRF(ctx context.Context, lim *ratelimiter.Limiter, cli *httpclient.Client, t model.Target, p model.Param, callbackHost string, listener *SSRFListener) []model.Finding {
 	if !looksLikeURLParam(p.Name) {
 		return nil
 	}
@@ -83,6 +84,32 @@ func CheckSSRF(ctx context.Context, lim *ratelimiter.Limiter, cli *httpclient.Cl
 		}
 	}
 
+	// Try local listener first if available
+	if listener != nil {
+		marker := "ssrf-" + Marker()
+		cb := "http://" + listener.listener.Addr().String() + "/" + marker
+		ex := sendWithPayload(ctx, lim, cli, t, p.Name, cb)
+		if ex.Err == nil && ex.Response != nil {
+			// Wait a moment for potential callback
+			time.Sleep(500 * time.Millisecond)
+			hit := listener.CheckHit(marker)
+			if hit != nil {
+				findings = append(findings, model.Finding{
+					Category:    "SSRF",
+					Severity:    model.SeverityCritical,
+					Title:       "Confirmed SSRF via local callback to parameter \"" + p.Name + "\"",
+					Description: fmt.Sprintf("Parameter %q was set to callback URL %q and the target server successfully connected back to our listener. This confirms the server fetches URLs provided in this parameter.", p.Name, cb),
+					URL:         t.URL,
+					Method:      t.Method,
+					Parameter:   p.Name,
+					Evidence:    model.Evidence{RequestRaw: ex.RequestRaw, ResponseRaw: ex.ResponseRaw, Notes: fmt.Sprintf("Callback received from %s at %s\nHeaders: %v\nBody: %s", hit.RemoteIP, hit.Timestamp.Format(time.RFC3339), hit.Headers, hit.Body)},
+					Remediation: "Validate/allowlist outbound destinations server-side (not just by regex on the URL string), block requests to link-local/metadata and loopback ranges, and prefer not letting user input choose a server-fetched URL at all.",
+				})
+			}
+		}
+	}
+
+	// Fall back to external callback if provided
 	if callbackHost != "" {
 		cb := callbackHost
 		if !strings.HasPrefix(cb, "http://") && !strings.HasPrefix(cb, "https://") {

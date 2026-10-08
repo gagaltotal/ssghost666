@@ -27,8 +27,9 @@ type Config struct {
 	TargetURL string
 	Depth     int
 
-	JSRender   bool
-	ChromePath string
+	JSRender    bool
+	DOMXSSCheck bool
+	ChromePath  string
 
 	Concurrency int
 	RatePerSec  float64
@@ -37,6 +38,7 @@ type Config struct {
 
 	Cookie    string
 	Bearer    string
+	AuthFlow  string // Path to JSON file defining multi-step authentication flow
 	Headers   []string
 	UserAgent string
 
@@ -47,11 +49,13 @@ type Config struct {
 	Wordlist    string
 	NoDiscover  bool
 
-	Checks  string // "all" or comma list
-	Exclude string
-	Scope   string
+	Checks   string // "all" or comma list
+	Exclude  string
+	Scope    string
+	JSLibsDB string // Path to directory containing external JS library vulnerability databases
 
-	SSRFCallback string
+	SSRFCallback       string
+	EnableSSRFListener bool
 
 	OutReport string
 	NoColor   bool
@@ -73,6 +77,7 @@ func Parse(args []string) *Config {
 	fs.IntVar(&cfg.Depth, "depth", 2, "Crawl depth for link discovery")
 
 	fs.BoolVar(&cfg.JSRender, "js-render", false, "Render pages with headless Chrome to discover JS-loaded routes/endpoints (requires Chrome/Chromium)")
+	fs.BoolVar(&cfg.DOMXSSCheck, "dom-xss", false, "Enable DOM-based XSS detection using headless Chrome (requires -js-render or Chrome/Chromium)")
 	fs.StringVar(&cfg.ChromePath, "chrome-path", "", "Explicit path to a Chrome/Chromium binary (optional, auto-detected otherwise)")
 
 	fs.IntVar(&cfg.Concurrency, "concurrency", 8, "Max concurrent HTTP requests")
@@ -82,6 +87,7 @@ func Parse(args []string) *Config {
 
 	fs.StringVar(&cfg.Cookie, "cookie", "", `Cookie header to send, e.g. "session=abc123; other=1"`)
 	fs.StringVar(&cfg.Bearer, "bearer", "", "Bearer token to send as Authorization: Bearer <token>")
+	fs.StringVar(&cfg.AuthFlow, "auth-flow", "", "Path to JSON file defining multi-step authentication flow (login form -> CSRF token extraction -> session)")
 	fs.Var(&headers, "header", `Extra header, "Key: Value" (repeatable)`)
 	fs.StringVar(&cfg.UserAgent, "ua", "SSGhost666/"+Version+" (+authorized-security-scan)", "User-Agent header to send")
 
@@ -95,8 +101,10 @@ func Parse(args []string) *Config {
 	fs.StringVar(&cfg.Checks, "checks", "all", "Comma-separated active checks to run: sqli,xss,cmdi,ssrf,auth,passive,all")
 	fs.StringVar(&cfg.Exclude, "exclude", "", "Regex of URLs to exclude from crawling/testing (e.g. logout endpoints)")
 	fs.StringVar(&cfg.Scope, "scope", "", "Regex restricting crawl to in-scope URLs. Defaults to same host as -url")
+	fs.StringVar(&cfg.JSLibsDB, "jslibs-db", "", "Path to directory containing external JS library vulnerability database JSON files")
 
 	fs.StringVar(&cfg.SSRFCallback, "ssrf-callback", "", "Out-of-band callback URL/domain you control (e.g. Burp Collaborator, interact.sh) used as the SSRF payload target")
+	fs.BoolVar(&cfg.EnableSSRFListener, "ssrf-listener", true, "Enable local SSRF callback listener for in-band detection (enabled by default)")
 
 	fs.StringVar(&cfg.OutReport, "out", "", "Path to write an HTML report with request/response evidence (e.g. report.html)")
 	fs.BoolVar(&cfg.NoColor, "no-color", false, "Disable ANSI colour in terminal output")

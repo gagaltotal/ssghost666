@@ -50,7 +50,9 @@ type Options struct {
 	Checks         Enabled
 	HasAuth        bool // true if -cookie or -bearer was set, enables the broken-access-control check
 	SSRFCallback   string
+	SSRFListener   *SSRFListener       // local callback listener for in-band SSRF detection
 	BrowserConfirm bool                // true if -js-render was set: attempt real-browser XSS execution confirmation
+	DOMXSSCheck    bool                // true to enable DOM-based XSS detection
 	ChromePath     string              // optional explicit Chrome/Chromium binary path
 	OnFinding      func(model.Finding) // progress callback, called as each finding is confirmed
 	OnProgress     func(string)
@@ -148,7 +150,7 @@ func Run(ctx context.Context, cli *httpclient.Client, lim *ratelimiter.Limiter, 
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					add(CheckSSRF(ctx, lim, cli, t, p, opt.SSRFCallback))
+					add(CheckSSRF(ctx, lim, cli, t, p, opt.SSRFCallback, opt.SSRFListener))
 				}()
 			}
 		}
@@ -157,6 +159,24 @@ func Run(ctx context.Context, cli *httpclient.Client, lim *ratelimiter.Limiter, 
 
 	if opt.Checks.Auth {
 		add(CheckCookieFlags(captured))
+	}
+
+	// DOM-based XSS check on unique URLs
+	if opt.Checks.XSS && opt.DOMXSSCheck {
+		testedURLs := make(map[string]bool)
+		for _, t := range targets {
+			// Only test each unique URL once (without query params)
+			baseURL := strings.Split(t.URL, "?")[0]
+			if testedURLs[baseURL] {
+				continue
+			}
+			testedURLs[baseURL] = true
+
+			if opt.OnProgress != nil {
+				opt.OnProgress(fmt.Sprintf("checking DOM XSS: %s", baseURL))
+			}
+			add(CheckDOMXSS(ctx, baseURL, opt.ChromePath))
+		}
 	}
 
 	sortFindings(findings)
