@@ -258,7 +258,7 @@ Format file JSON:
 ```json
 {
   "version": "1.0",
-  "last_updated": "2024-01-15",
+  "last_updated": "2026-01-15",
   "vulnerabilities": [
     {
       "library": "React",
