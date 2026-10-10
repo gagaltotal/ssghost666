@@ -16,6 +16,8 @@ import (
 // the -checks flag.
 type Enabled struct {
 	SQLi, XSS, CmdI, SSRF, Auth, Passive bool
+	SSTI, XXE, Deser, GraphQL            bool
+	WebSocket, BlindXSS                  bool
 }
 
 // ParseChecks turns "all" or a comma list like "sqli,xss,passive" into an
@@ -23,7 +25,10 @@ type Enabled struct {
 func ParseChecks(spec string) Enabled {
 	spec = strings.ToLower(strings.TrimSpace(spec))
 	if spec == "" || spec == "all" {
-		return Enabled{true, true, true, true, true, true}
+		return Enabled{
+			SQLi: true, XSS: true, CmdI: true, SSRF: true, Auth: true, Passive: true,
+			SSTI: true, XXE: true, Deser: true, GraphQL: true, WebSocket: true, BlindXSS: true,
+		}
 	}
 	var e Enabled
 	for _, c := range strings.Split(spec, ",") {
@@ -40,6 +45,18 @@ func ParseChecks(spec string) Enabled {
 			e.Auth = true
 		case "passive":
 			e.Passive = true
+		case "ssti":
+			e.SSTI = true
+		case "xxe":
+			e.XXE = true
+		case "deser", "deserialization":
+			e.Deser = true
+		case "graphql":
+			e.GraphQL = true
+		case "websocket", "ws":
+			e.WebSocket = true
+		case "blindxss", "bxss":
+			e.BlindXSS = true
 		}
 	}
 	return e
@@ -51,6 +68,8 @@ type Options struct {
 	HasAuth        bool // true if -cookie or -bearer was set, enables the broken-access-control check
 	SSRFCallback   string
 	SSRFListener   *SSRFListener       // local callback listener for in-band SSRF detection
+	BlindXSSList   *BlindXSSListener   // local callback listener for blind/stored XSS beacons
+	OOBCallback    *OOBCallback        // marker-keyed callback for out-of-band XXE confirmation
 	BrowserConfirm bool                // true if -js-render was set: attempt real-browser XSS execution confirmation
 	DOMXSSCheck    bool                // true to enable DOM-based XSS detection
 	ChromePath     string              // optional explicit Chrome/Chromium binary path
@@ -96,6 +115,11 @@ func Run(ctx context.Context, cli *httpclient.Client, lim *ratelimiter.Limiter, 
 		add(CheckPassive(captured))
 	}
 
+	// Blind/stored XSS markers are collected as they are injected so the
+	// final sweep can map a delayed callback back to its target/param.
+	var bxssMu sync.Mutex
+	bxssCorrelations := map[string]blindXSSCorrelation{}
+
 	// Every actual HTTP call made below — baseline fetches, each fuzz
 	// payload, CORS probes, the unauthenticated access-control re-request
 	// — goes through sendWithPayload/CheckCORS/CheckBrokenAccessControl,
@@ -120,6 +144,25 @@ func Run(ctx context.Context, cli *httpclient.Client, lim *ratelimiter.Limiter, 
 				if opt.HasAuth {
 					add(CheckBrokenAccessControl(ctx, lim, cli, t, baseline))
 				}
+			}()
+		}
+
+		// XXE is target-level (a raw XML body), not per-parameter.
+		if opt.Checks.XXE {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				add(CheckXXE(ctx, lim, cli, t, opt.OOBCallback))
+			}()
+		}
+
+		// Insecure-deserialization takes both the whole target and each
+		// parameter, so it manages its own looping.
+		if opt.Checks.Deser {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				add(CheckDeserialization(ctx, lim, cli, baseline, t))
 			}()
 		}
 
@@ -153,9 +196,49 @@ func Run(ctx context.Context, cli *httpclient.Client, lim *ratelimiter.Limiter, 
 					add(CheckSSRF(ctx, lim, cli, t, p, opt.SSRFCallback, opt.SSRFListener))
 				}()
 			}
+			if opt.Checks.SSTI {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					add(CheckSSTI(ctx, lim, cli, baseline, t, p))
+				}()
+			}
+			if opt.Checks.BlindXSS {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					add(CheckBlindXSS(ctx, lim, cli, t, p, opt.BlindXSSList, func(marker string, c blindXSSCorrelation) {
+						bxssMu.Lock()
+						bxssCorrelations[marker] = c
+						bxssMu.Unlock()
+					}))
+				}()
+			}
 		}
 	}
 	wg.Wait()
+
+	// GraphQL and WebSocket are per-service, not per-parameter, and are
+	// best run once after the per-target loop so their (few) extra
+	// requests don't interleave with the bulk fuzzing.
+	if opt.Checks.GraphQL {
+		add(RunGraphQLChecks(ctx, lim, cli, targets, opt.HasAuth))
+	}
+	if opt.Checks.WebSocket {
+		add(RunWebSocketChecks(ctx, lim, cli, targets, opt.HasAuth))
+	}
+
+	// Final blind-XSS sweep: any callback that arrived after its own
+	// injection check already returned.
+	if opt.Checks.BlindXSS && opt.BlindXSSList != nil {
+		bxssMu.Lock()
+		corr := make(map[string]blindXSSCorrelation, len(bxssCorrelations))
+		for k, v := range bxssCorrelations {
+			corr[k] = v
+		}
+		bxssMu.Unlock()
+		add(blindXSSSweep(corr, opt.BlindXSSList))
+	}
 
 	if opt.Checks.Auth {
 		add(CheckCookieFlags(captured))

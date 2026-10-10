@@ -57,6 +57,9 @@ type Config struct {
 	SSRFCallback       string
 	EnableSSRFListener bool
 
+	EnableBlindXSSListener bool
+	EnableOOBListener      bool
+
 	OutReport string
 	NoColor   bool
 	NoRedact  bool
@@ -98,13 +101,15 @@ func Parse(args []string) *Config {
 	fs.StringVar(&cfg.Wordlist, "wordlist", "", "Path to a custom wordlist for hidden file/endpoint discovery (one path per line). Defaults to a small built-in list")
 	fs.BoolVar(&cfg.NoDiscover, "no-discover", false, "Disable wordlist-based hidden endpoint discovery")
 
-	fs.StringVar(&cfg.Checks, "checks", "all", "Comma-separated active checks to run: sqli,xss,cmdi,ssrf,auth,passive,all")
+	fs.StringVar(&cfg.Checks, "checks", "all", "Comma-separated active checks to run: sqli,xss,cmdi,ssrf,auth,passive,ssti,xxe,deser,graphql,websocket,blindxss,all")
 	fs.StringVar(&cfg.Exclude, "exclude", "", "Regex of URLs to exclude from crawling/testing (e.g. logout endpoints)")
 	fs.StringVar(&cfg.Scope, "scope", "", "Regex restricting crawl to in-scope URLs. Defaults to same host as -url")
 	fs.StringVar(&cfg.JSLibsDB, "jslibs-db", "", "Path to directory containing external JS library vulnerability database JSON files")
 
 	fs.StringVar(&cfg.SSRFCallback, "ssrf-callback", "", "Out-of-band callback URL/domain you control (e.g. Burp Collaborator, interact.sh) used as the SSRF payload target")
 	fs.BoolVar(&cfg.EnableSSRFListener, "ssrf-listener", true, "Enable local SSRF callback listener for in-band detection (enabled by default)")
+	fs.BoolVar(&cfg.EnableBlindXSSListener, "blind-xss-listener", true, "Enable the local blind/stored-XSS callback listener that detects delayed beacon execution (enabled by default)")
+	fs.BoolVar(&cfg.EnableOOBListener, "oob-listener", true, "Enable the local out-of-band callback listener used to confirm blind XXE and other server-side injections (enabled by default)")
 
 	fs.StringVar(&cfg.OutReport, "out", "", "Path to write an HTML report with request/response evidence (e.g. report.html)")
 	fs.BoolVar(&cfg.NoColor, "no-color", false, "Disable ANSI colour in terminal output")

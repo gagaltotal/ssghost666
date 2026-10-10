@@ -14,11 +14,34 @@ const bq = "`"
 var (
 	reAbsoluteURL = regexp.MustCompile(`https?://[^\s"'` + bq + `<>\\\)]{4,}`)
 
+	// WebSocket endpoints are collected separately: they can't be crawled
+	// or fuzzed like an HTTP route, but they are scan targets for the
+	// WebSocket security checks, so they're kept out of the HTTP frontier.
+	reWebSocketURL = regexp.MustCompile(`wss?://[^\s"'` + bq + `<>\\\)]{3,}`)
+
 	// Quoted strings that look like an API-ish relative path: start with
 	// "/", at least one more path segment or a recognizable API prefix,
 	// to keep noise down (plain "/" or single words rarely matter).
 	reRelativePath = regexp.MustCompile(`["'` + bq + `](/(?:api|v[0-9]+|graphql|rest|internal|admin|service)?[A-Za-z0-9_\-{}./]*)["'` + bq + `?]`)
 )
+
+// extractJSWebSockets pulls literal ws:// / wss:// URLs out of a JS file's
+// source. Static analysis only, so it misses sockets whose URL is built at
+// runtime — those are caught by the browser's network events in
+// dynamic.go when -js-render is used.
+func extractJSWebSockets(src string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, m := range reWebSocketURL.FindAllString(src, -1) {
+		u := strings.TrimRight(m, `.,;'"`+bq)
+		if u == "" || seen[u] {
+			continue
+		}
+		seen[u] = true
+		out = append(out, u)
+	}
+	return out
+}
 
 // extractJSEndpoints applies LinkFinder-style heuristics to one JS file's
 // source text and returns absolute URLs worth adding to the crawl queue.

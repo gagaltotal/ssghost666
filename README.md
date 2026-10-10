@@ -5,7 +5,8 @@ Pemindai keamanan web berbasis CLI, ditulis dalam Go. Fokusnya adalah
 miliki atau telah mendapat izin eksplisit untuk diuji: menemukan
 halaman/endpoint, meng-crawl rute yang dimuat JavaScript, mengimpor
 definisi API, lalu menjalankan pemeriksaan terarah untuk SQL injection,
-XSS, command injection, SSRF, masalah autentikasi, dan beberapa
+XSS (termasuk blind/stored), command injection, SSRF, SSTI, XXE, insecure
+deserialization, GraphQL, WebSocket, masalah autentikasi, dan beberapa
 pemeriksaan pasif — dengan setiap temuan membawa bukti request/response
 mentah.
 
@@ -35,6 +36,12 @@ mentah.
   - **Deteksi in-band ke metadata cloud** — mencocokkan marker metadata AWS/GCP/Azure di respons (dengan penyaringan agar endpoint yang sekadar meng-echo input tidak salah terdeteksi).
   - **Dukungan callback OOB eksternal** (`-ssrf-callback`) — untuk kasus di mana target hanya bisa keluar ke internet publik (Burp Collaborator, interact.sh, dsb).
 - **Pemeriksaan autentikasi**: kesalahan konfigurasi CORS, indikasi broken access control (dibandingkan dengan & tanpa kredensial, disaring agar tidak berisik di halaman publik biasa), flag keamanan cookie, decode JWT (mendeteksi `alg: none`, klaim `exp` yang hilang).
+- **Blind (stored) XSS dengan storage callback** (`-checks blindxss`): payload beacon berisi marker unik disuntik ke parameter yang cenderung disimpan (nama, komentar, email, dst). Karena stored XSS baru tereksekusi saat admin/other user membuka halaman yang menyimpannya, SSGhost666 menjalankan **listener callback lokal** (`-blind-xss-listener`, aktif default) yang menyajikan JS beacon dan mencatat eksekusi dari browser korban — lengkap dengan cookie, URL, referer, user-agent, dan cuplikan HTML halaman. Callback yang datang terlambat tetap tertangkap oleh sweep akhir di ujung pemindaian.
+- **SSTI (Server-Side Template Injection)** (`-checks ssti`): dua tingkat. Pertama probe aritmatika lintas-engine (`{{7331*7331}}`, `${...}`, `#{...}`, `<%= ... %>`, `*{...}`) — kalau hasilnya (`53743061`) muncul di respons, input mencapai template engine. Kedua, konfirmasi per-engine (Jinja2 `{{7*'7'}}`→`7777777`, Twig→`49`, Freemarker, Velocity, ERB, Smarty) plus pencocokan signature error template, sehingga temuan menyebut engine spesifiknya, bukan sekadar "ada SSTI".
+- **XXE (XML External Entity)** (`-checks xxe`): hanya menyentuh endpoint yang memang memproses XML (URL `.xml`/`soap`/`wsdl`, Content-Type XML, atau punya body param terstruktur). Tier 1 mencoba baca file lokal (`/etc/passwd`, `/etc/hostname`, `C:\Windows\win.ini`) dengan DOCTYPE external entity; Tier 2 memakai **listener callback OOB lokal** (`-oob-listener`, aktif default) untuk konfirmasi blind XXE saat tidak ada konten file yang direfleksikan.
+- **Insecure deserialization** (`-checks deser`): mengenali signature serialized object (Java `rO0AB`, PHP `O:8:`/`a:2:{`, .NET `AAEAAAD/////`) di parameter/header, lalu menyuntik payload serialized ber-marker dan mendeteksi **error deserialization** yang tidak ada di baseline (`InvalidClassException`, `UnpicklingError`, `unserialize()`, `SerializationException`, dst). Jika signature serialized sudah terlihat, payload pickle `sleep` non-destruktif dipakai untuk **konfirmasi eksekusi kode** dengan dua request independen.
+- **GraphQL introspection & injection** (`-checks graphql`): menemukan endpoint GraphQL dari path yang di-crawl maupun path konvensional (`/graphql`, `/api/graphql`, `/gql`, `/graphiql`, dst) per origin, lalu mendeteksi apakah endpoint benar-benar GraphQL (respons error berbentuk GraphQL untuk query yang rusak). Setelah itu: **introspection query** untuk mengukur paparan schema, **authorization bypass** (query yang sama berhasil tanpa kredensial), **error-based SQLi** di variabel resolver, dan **information disclosure** lewat stack trace/debug di error channel.
+- **WebSocket security testing** (`-checks websocket`): endpoint WebSocket dikumpulkan dua arah — literal `ws://`/`wss://` di file JS (analisis statis) dan event jaringan browser saat `-js-render` (`EventWebSocketCreated`). Dites dengan klien RFC 6455 minimal (tanpa dependensi eksternal): keberadaan handshake, **authentication bypass** (handshake tanpa kredensial), **Origin validation / CSWSH** (handshake dengan Origin domain asing), **message injection/reflection** (marker dipantulkan kembali, primitif DOM XSS), dan **rate limiting** (flood pesan tanpa throttling).
 - **Pemeriksaan pasif**: header keamanan yang hilang, kebocoran versi lewat header `Server`/`X-Powered-By`, stack trace/error verbose, directory listing, mixed content, **dan pustaka JavaScript dengan versi yang diketahui rentan** (jQuery, jQuery UI, Bootstrap, Lodash, Moment.js, Handlebars, Underscore.js, AngularJS — dicocokkan dari banner versi di file JS atau nama filenya, terhadap tabel CVE publik yang sudah diverifikasi, masing-masing dengan referensi CVE dan saran upgrade).
 - **Basis data pustaka JS yang dapat diperbarui** (`-jslibs-db`): tabel CVE bawaan (built-in) dapat diperluas dengan file JSON eksternal tanpa perlu rebuild. Letakkan file database kustom Anda (lihat `jslibs-db-example.json`) di sebuah direktori, lalu gunakan `-jslibs-db /path/to/db-dir`. Database eksternal akan digabungkan dengan database bawaan saat pemindaian dimulai. Cocok untuk menambahkan CVE terbaru atau pustaka internal/proprietary.
 - **Output terminal berwarna**, langsung terbaca, dengan temuan dicetak live saat ditemukan.
@@ -125,7 +132,8 @@ discovery, checks, SSRF callback, dll).
 ```
 
 Nilai yang didukung: `sqli`, `xss`, `cmdi`, `ssrf`, `auth`, `passive`,
-atau `all` (bawaan).
+`ssti`, `xxe`, `deser`, `graphql`, `websocket`, `blindxss`, atau `all`
+(bawaan).
 
 ### Pengujian SSRF dengan callback OOB
 
@@ -150,6 +158,28 @@ Secara default, SSGhost666 menjalankan listener HTTP lokal untuk deteksi SSRF in
 ```
 
 Jika target berhasil memanggil balik listener, SSRF langsung terkonfirmasi. Nonaktifkan dengan `-ssrf-listener=false` jika tidak diperlukan.
+
+#### Blind XSS dengan Listener Lokal
+
+Listener blind-XSS menyajikan beacon dan mencatat eksekusi tertunda dari browser korban:
+
+```bash
+./ssghost666 -url https://app.anda.com -checks blindxss
+# Listener otomatis dimulai, misal di http://192.168.1.100:54321
+```
+
+Payload disuntikkan ke parameter yang cenderung disimpan; begitu seorang admin membuka halaman yang memuatnya, callback datang dan temuan langsung dilaporkan (termasuk cookie, URL, dan referer korban). Nonaktifkan dengan `-blind-xss-listener=false`.
+
+#### Callback Out-of-Band (XXE / server-side blind)
+
+Untuk konfirmasi XXE blind dan injeksi server-side lain yang tidak terlihat di respons:
+
+```bash
+./ssghost666 -url https://app.anda.com -checks xxe
+# Listener OOB otomatis dimulai, misal di http://192.168.1.100:54400
+```
+
+Jika XML parser target mencoba memuat external entity yang menunjuk ke listener ini, XXE blind terkonfirmasi. Nonaktifkan dengan `-oob-listener=false`.
 
 #### DOM-based XSS Detection
 
@@ -255,6 +285,13 @@ internal/scanner             — setiap modul pemeriksaan + engine orkestrasi
   sqli.go                      error-based, boolean-based, time-based
   xss.go + xss_confirm.go      deteksi refleksi + konfirmasi eksekusi browser
   cmdi.go, ssrf.go, auth.go    command injection, SSRF, CORS/broken-access/JWT
+  ssti.go                      template injection (aritmatika + fingerprint engine)
+  xxe.go + oob.go              XML external entity + listener callback OOB
+  deserialization.go           signature serialized object + konfirmasi sleep
+  graphql.go                   deteksi endpoint, introspection, injeksi
+  websocket.go                 klien RFC 6455: auth, Origin/CSWSH, injection, rate limit
+  blindxss.go                  blind/stored XSS + listener callback beacon
+  request_extra.go             helper request raw body (XML/JSON/serialized)
   passive.go + jslibs.go       header/error/listing pasif + versi pustaka JS rentan
 internal/report               — output terminal & laporan HTML
 ```
@@ -306,6 +343,12 @@ Fitur-fitur berikut yang sebelumnya direncanakan **sudah selesai diimplementasik
 2. **DOM-based XSS detection** — deteksi penuh sink berbahaya JavaScript (`innerHTML`, `eval`, `document.write`, dst) yang dipicu dari sumber DOM (`location.hash`, `postMessage`) dengan konfirmasi eksekusi via headless Chrome.
 3. **Autentikasi multi-langkah** — framework lengkap untuk alur login kompleks dengan ekstraksi token CSRF, session cookies, dan dukungan JavaScript via headless browser.
 4. **Basis data pustaka JS yang updatable** — database CVE kini bisa diperluas dengan file JSON eksternal tanpa rebuild, mendukung update terbaru dan pustaka proprietary.
+5. **Blind (stored) XSS dengan storage callback** — beacon ber-marker disuntik ke parameter yang cenderung disimpan, dan listener callback lokal mencatat eksekusi tertunda dari browser korban (cookie, URL, referer, HTML) dengan sweep akhir untuk callback yang telat.
+6. **SSTI (Server-Side Template Injection)** — deteksi aritmatika lintas-engine, lalu konfirmasi engine spesifik (Jinja2, Twig, Freemarker, Velocity, ERB, Smarty) plus pencocokan signature error.
+7. **XXE (XML External Entity)** — file-read non-destruktif (`/etc/passwd`, `win.ini`) dan konfirmasi blind lewat listener callback OOB lokal.
+8. **Insecure deserialization** — signature serialized object (Java, PHP, .NET, pickle) di parameter/header, deteksi error deserialization, dan konfirmasi eksekusi kode via payload pickle `sleep`.
+9. **GraphQL introspection & injection** — deteksi endpoint (crawl + path konvensional), introspection schema, authorization bypass, SQLi resolver, dan information disclosure.
+10. **WebSocket security testing** — pengumpulan endpoint dari JS statis maupun event browser, lalu uji authentication bypass, Origin/CSWSH, message injection, dan rate limiting dengan klien RFC 6455 minimal.
 
 Setiap fitur sudah diuji production-ready: boolean-blind dan time-based SQLi divalidasi hingga terbukti saling tidak kontaminasi silang, konfirmasi XSS divalidasi dengan Chrome sungguhan hingga benar-benar mengeksekusi script yang disuntik, deteksi pustaka JS diuji dengan 11 skenario, dan resolver OpenAPI diuji dengan dokumen yang memakai `$ref` bersarang di dalam `allOf`.
 
@@ -315,17 +358,9 @@ Arah perluasan yang masih masuk akal untuk meningkatkan kemampuan SSGhost666:
 
 #### Deteksi & Eksploitasi Lanjutan
 
-- **Blind XSS dengan storage callback** — payload XSS yang tersimpan di database dan ter-trigger kemudian (misalnya di admin panel), dengan polling otomatis ke callback server untuk mendeteksi eksekusi tertunda. Berguna untuk stored XSS yang sulit dideteksi langsung.
+- **Server-Side Request Forgery lanjutan (SSRF gopher/dict/file)** — dukungan skema selain HTTP (gopher untuk interaksi Redis/memcached, `dict://`, `file://`) untuk memperluas deteksi ke layanan internal non-HTTP.
 
-- **SSTI (Server-Side Template Injection)** — deteksi template engine (Jinja2, Twig, Freemarker, Velocity, dst) via payload matematika sederhana dan signature error, lalu konfirmasi dengan payload yang lebih spesifik per-engine.
-
-- **XXE (XML External Entity)** — parser XML yang menerima DTD eksternal, diuji dengan payload yang mencoba baca file lokal (`/etc/passwd`) atau trigger DNS callback untuk konfirmasi out-of-band.
-
-- **Insecure deserialization** — deteksi signature serialized object (Java, Python pickle, PHP serialize, .NET BinaryFormatter) di parameter/header, plus payload sleep-based untuk konfirmasi eksekusi kode.
-
-- **GraphQL introspection & injection** — deteksi endpoint GraphQL, ekstrak schema via introspection query, lalu fuzz mutation/query untuk SQL injection, authorization bypass, dan information disclosure.
-
-- **WebSocket security testing** — crawl WebSocket endpoints dari JavaScript, uji authentication bypass, message injection, dan rate limiting pada real-time communication.
+- **Prototype pollution detection** — deteksi kerentanan prototype pollution di aplikasi JavaScript (klien maupun Node.js) via payload `__proto__`/`constructor.prototype` dan konfirmasi lewat perubahan perilaku objek.
 
 #### Smart Fuzzing & AI
 

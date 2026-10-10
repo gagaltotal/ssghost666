@@ -37,6 +37,19 @@ func RenderJS(ctx context.Context, chromePath, rawURL string, settle time.Durati
 	var reqs []model.Target
 
 	chromedp.ListenTarget(tabCtx, func(ev interface{}) {
+		// WebSocket endpoints the page opened. They can't be fuzzed like
+		// an HTTP route, so they're recorded with a distinct Source and
+		// handed to the WebSocket scanner module.
+		if ws, ok := ev.(*network.EventWebSocketCreated); ok && ws.URL != "" {
+			mu.Lock()
+			if !seen[ws.URL] {
+				seen[ws.URL] = true
+				reqs = append(reqs, model.Target{Method: "GET", URL: ws.URL, Source: "websocket"})
+			}
+			mu.Unlock()
+			return
+		}
+
 		e, ok := ev.(*network.EventRequestWillBeSent)
 		if !ok || e.Request == nil {
 			return

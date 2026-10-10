@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -195,11 +196,58 @@ func main() {
 		}
 	}
 
+	// Start the blind/stored-XSS callback listener if those checks are
+	// enabled and the listener is not disabled.
+	var blindXSSListener *scanner.BlindXSSListener
+	if checks.BlindXSS && cfg.EnableBlindXSSListener {
+		listener, err := scanner.NewBlindXSSListener(0) // Port 0 = auto-select
+		if err == nil {
+			addr, err := listener.Start()
+			if err == nil {
+				blindXSSListener = listener
+				term.Info("blind-XSS callback listener started at http://%s", addr)
+				defer func() {
+					if err := listener.Stop(); err != nil {
+						term.Warn("failed to stop blind-XSS listener: %v", err)
+					}
+				}()
+			} else {
+				term.Warn("failed to start blind-XSS listener: %v", err)
+			}
+		} else {
+			term.Warn("failed to create blind-XSS listener: %v", err)
+		}
+	}
+
+	// Start the out-of-band callback listener (blind XXE confirmation).
+	var oobCallback *scanner.OOBCallback
+	if checks.XXE && cfg.EnableOOBListener {
+		cb, err := scanner.NewOOBCallback(0)
+		if err == nil {
+			addr, err := cb.Start()
+			if err == nil {
+				oobCallback = cb
+				term.Info("out-of-band callback listener started at http://%s", addr)
+				defer func() {
+					if err := cb.Stop(); err != nil {
+						term.Warn("failed to stop OOB callback listener: %v", err)
+					}
+				}()
+			} else {
+				term.Warn("failed to start OOB callback listener: %v", err)
+			}
+		} else {
+			term.Warn("failed to create OOB callback listener: %v", err)
+		}
+	}
+
 	findings := scanner.Run(ctx, cli, lim, allTargets, allCaptured, scanner.Options{
 		Checks:         checks,
 		HasAuth:        hasAuth,
 		SSRFCallback:   cfg.SSRFCallback,
 		SSRFListener:   ssrfListener,
+		BlindXSSList:   blindXSSListener,
+		OOBCallback:    oobCallback,
 		BrowserConfirm: cfg.JSRender,
 		DOMXSSCheck:    cfg.DOMXSSCheck,
 		ChromePath:     cfg.ChromePath,
@@ -233,11 +281,17 @@ func main() {
 }
 
 func checksLabel(e scanner.Enabled) string {
-	if e.SQLi && e.XSS && e.CmdI && e.SSRF && e.Auth && e.Passive {
+	if e.SQLi && e.XSS && e.CmdI && e.SSRF && e.Auth && e.Passive &&
+		e.SSTI && e.XXE && e.Deser && e.GraphQL && e.WebSocket && e.BlindXSS {
 		return "all"
 	}
 	var on []string
-	for name, v := range map[string]bool{"sqli": e.SQLi, "xss": e.XSS, "cmdi": e.CmdI, "ssrf": e.SSRF, "auth": e.Auth, "passive": e.Passive} {
+	for name, v := range map[string]bool{
+		"sqli": e.SQLi, "xss": e.XSS, "cmdi": e.CmdI, "ssrf": e.SSRF,
+		"auth": e.Auth, "passive": e.Passive, "ssti": e.SSTI, "xxe": e.XXE,
+		"deser": e.Deser, "graphql": e.GraphQL, "websocket": e.WebSocket,
+		"blindxss": e.BlindXSS,
+	} {
 		if v {
 			on = append(on, name)
 		}
@@ -245,6 +299,7 @@ func checksLabel(e scanner.Enabled) string {
 	if len(on) == 0 {
 		return "none"
 	}
+	sort.Strings(on)
 	return strings.Join(on, ",")
 }
 

@@ -142,10 +142,12 @@ func Crawl(ctx context.Context, cli *httpclient.Client, lim *ratelimiter.Limiter
 		// level; discovered endpoints are folded into the *next* frontier
 		// so they get crawled like any other link, and the files
 		// themselves are kept as captured evidence (e.g. for the
-		// known-vulnerable-library passive check).
-		jsEndpoints, jsCaptured := fetchAndMineJS(ctx, cli, lim, jsFiles, opt.OnJSFile)
+		// known-vulnerable-library passive check). Literal WebSocket URLs
+		// found in the source become scan targets for the WebSocket checks.
+		jsEndpoints, jsCaptured, jsWebSockets := fetchAndMineJS(ctx, cli, lim, jsFiles, opt.OnJSFile)
 		nextLinks = append(nextLinks, jsEndpoints...)
 		res.Captured = append(res.Captured, jsCaptured...)
+		res.Targets = append(res.Targets, jsWebSockets...)
 
 		frontier = dedupeInScope(nextLinks, opt.InScope)
 	}
@@ -170,11 +172,12 @@ func dedupeInScope(urls []string, inScope func(string) bool) []string {
 }
 
 // fetchAndMineJS fetches every JS file once, mines it for endpoint-like
-// strings (extractJSEndpoints), and also returns each file as a
-// CapturedResponse — the library-version passive check needs the actual
-// file content, not just the endpoints extracted from it, so a JS file
-// fetched here is first-class evidence, not a throwaway intermediate.
-func fetchAndMineJS(ctx context.Context, cli *httpclient.Client, lim *ratelimiter.Limiter, jsFiles []string, onJS func(string)) ([]string, []model.CapturedResponse) {
+// strings (extractJSEndpoints) and literal WebSocket URLs, and also
+// returns each file as a CapturedResponse — the library-version passive
+// check needs the actual file content, not just the endpoints extracted
+// from it, so a JS file fetched here is first-class evidence, not a
+// throwaway intermediate.
+func fetchAndMineJS(ctx context.Context, cli *httpclient.Client, lim *ratelimiter.Limiter, jsFiles []string, onJS func(string)) ([]string, []model.CapturedResponse, []model.Target) {
 	seenJS := map[string]bool{}
 	var unique []string
 	for _, j := range jsFiles {
@@ -186,6 +189,8 @@ func fetchAndMineJS(ctx context.Context, cli *httpclient.Client, lim *ratelimite
 	var mu sync.Mutex
 	var endpoints []string
 	var captured []model.CapturedResponse
+	var wsTargets []model.Target
+	seenWS := map[string]bool{}
 	var wg sync.WaitGroup
 	for _, j := range unique {
 		wg.Add(1)
@@ -204,14 +209,22 @@ func fetchAndMineJS(ctx context.Context, cli *httpclient.Client, lim *ratelimite
 			}
 			pu, _ := url.Parse(jsURL)
 			found := extractJSEndpoints(pu, ex.Body)
+			sockets := extractJSWebSockets(ex.Body)
 			mu.Lock()
 			endpoints = append(endpoints, found...)
+			for _, ws := range sockets {
+				if seenWS[ws] {
+					continue
+				}
+				seenWS[ws] = true
+				wsTargets = append(wsTargets, model.Target{Method: "GET", URL: ws, Source: "websocket"})
+			}
 			captured = append(captured, toCaptured(ex, jsURL))
 			mu.Unlock()
 		}(j)
 	}
 	wg.Wait()
-	return endpoints, captured
+	return endpoints, captured, wsTargets
 }
 
 // queryTarget builds a Target from a URL that already carries query
