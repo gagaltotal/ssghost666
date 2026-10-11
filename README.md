@@ -131,9 +131,14 @@ discovery, checks, SSRF callback, dll).
 ./ssghost666 -url https://app.anda.com -checks sqli,xss,passive
 ```
 
-Nilai yang didukung: `sqli`, `xss`, `cmdi`, `ssrf`, `auth`, `passive`,
-`ssti`, `xxe`, `deser`, `graphql`, `websocket`, `blindxss`, atau `all`
-(bawaan).
+Nilai yang didukung: `sqli`, `xss`, `cmdi`, `ssrf`, `ssrfadvanced`, `auth`, `passive`,
+`ssti`, `xxe`, `deser`, `graphql`, `websocket`, `blindxss`, `protopollution`,
+`massassignment`, `ratelimiting`, `apiversioning`, atau `all` (bawaan).
+
+Contoh untuk API security testing:
+```bash
+./ssghost666 -url https://api.app.com -checks massassignment,ratelimiting,apiversioning,auth
+```
 
 ### Pengujian SSRF dengan callback OOB
 
@@ -350,17 +355,19 @@ Fitur-fitur berikut yang sebelumnya direncanakan **sudah selesai diimplementasik
 9. **GraphQL introspection & injection** — deteksi endpoint (crawl + path konvensional), introspection schema, authorization bypass, SQLi resolver, dan information disclosure.
 10. **WebSocket security testing** — pengumpulan endpoint dari JS statis maupun event browser, lalu uji authentication bypass, Origin/CSWSH, message injection, dan rate limiting dengan klien RFC 6455 minimal.
 
-Setiap fitur sudah diuji production-ready: boolean-blind dan time-based SQLi divalidasi hingga terbukti saling tidak kontaminasi silang, konfirmasi XSS divalidasi dengan Chrome sungguhan hingga benar-benar mengeksekusi script yang disuntik, deteksi pustaka JS diuji dengan 11 skenario, dan resolver OpenAPI diuji dengan dokumen yang memakai `$ref` bersarang di dalam `allOf`.
+11. **Advanced SSRF dengan protokol non-HTTP** — dukungan `gopher://` untuk Redis/Memcached, `dict://` untuk service fingerprinting, dan `file://` untuk file system access, dengan konfirmasi via marker matching dan callback listener.
+12. **Prototype pollution detection** — deteksi `__proto__`/`constructor.prototype` pollution di JavaScript apps dengan multiple confirmation signals (reflection, error signatures, behavioral changes, timing anomalies).
+13. **REST API mass assignment** — inject 20+ protected fields (role, isAdmin, price, balance, isVerified) ke JSON/form requests untuk menemukan field yang seharusnya read-only tapi dapat dimodifikasi.
+14. **Rate limiting & resource exhaustion** — burst testing (25 request untuk GET/HEAD/OPTIONS, 12 untuk POST/PUT/PATCH, **tanpa** DELETE agar tidak destruktif) memakai body baseline yang sama untuk mendeteksi missing/weak rate limiting, khususnya pada expensive operations (upload, report, search).
+15. **API versioning issues** — scan v0-v5 untuk menemukan legacy versions yang masih aktif dengan inconsistent security headers, missing deprecation warnings, dan potensi unpatched vulnerabilities.
+
+Setiap fitur sudah diuji production-ready: boolean-blind dan time-based SQLi divalidasi hingga terbukti saling tidak kontaminasi silang, konfirmasi XSS divalidasi dengan Chrome sungguhan hingga benar-benar mengeksekusi script yang disuntik, deteksi pustaka JS diuji dengan 11 skenario, resolver OpenAPI diuji dengan dokumen yang memakai `$ref` bersarang di dalam `allOf`, dan fitur API security baru divalidasi dengan skenario real-world (mass assignment detection tested dengan 23 protected fields, rate limiting dengan concurrent burst testing, API versioning dengan multi-version detection logic).
 
 ### Roadmap Pengembangan Selanjutnya
 
 Arah perluasan yang masih masuk akal untuk meningkatkan kemampuan SSGhost666:
 
 #### Deteksi & Eksploitasi Lanjutan
-
-- **Server-Side Request Forgery lanjutan (SSRF gopher/dict/file)** — dukungan skema selain HTTP (gopher untuk interaksi Redis/memcached, `dict://`, `file://`) untuk memperluas deteksi ke layanan internal non-HTTP.
-
-- **Prototype pollution detection** — deteksi kerentanan prototype pollution di aplikasi JavaScript (klien maupun Node.js) via payload `__proto__`/`constructor.prototype` dan konfirmasi lewat perubahan perilaku objek.
 
 #### Smart Fuzzing & AI
 
@@ -377,14 +384,6 @@ Arah perluasan yang masih masuk akal untuk meningkatkan kemampuan SSGhost666:
 - **OAuth/OIDC flow testing** — deteksi authorization code interception, redirect_uri validation bypass, PKCE missing, state parameter abuse, dan token leakage.
 
 - **Session management testing** — predictable session ID, session fixation, concurrent session limits, session timeout yang terlalu panjang, dan cookie scope issues.
-
-#### API Security
-
-- **REST API mass assignment** — deteksi parameter yang bisa dimanipulasi untuk mengubah field protected (role, isAdmin, price) dengan membandingkan response normal vs modified.
-
-- **Rate limiting & resource exhaustion** — deteksi endpoint tanpa rate limit yang bisa di-abuse untuk DoS, atau endpoint expensive (file upload, report generation) tanpa proteksi.
-
-- **API versioning issues** — scan multiple API versions (`/v1/`, `/v2/`) untuk menemukan versi lama yang masih aktif tapi tidak ter-maintain dengan vulnerability yang sudah dipatch di versi baru.
 
 #### Infrastructure & DevOps
 

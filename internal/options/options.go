@@ -11,7 +11,7 @@ import (
 )
 
 // Version is the tool version, set at build time via -ldflags if desired.
-var Version = "0.1.0"
+var Version = "0.1.1"
 
 // headerList implements flag.Value so -header can be passed multiple times.
 type headerList []string
@@ -101,7 +101,7 @@ func Parse(args []string) *Config {
 	fs.StringVar(&cfg.Wordlist, "wordlist", "", "Path to a custom wordlist for hidden file/endpoint discovery (one path per line). Defaults to a small built-in list")
 	fs.BoolVar(&cfg.NoDiscover, "no-discover", false, "Disable wordlist-based hidden endpoint discovery")
 
-	fs.StringVar(&cfg.Checks, "checks", "all", "Comma-separated active checks to run: sqli,xss,cmdi,ssrf,auth,passive,ssti,xxe,deser,graphql,websocket,blindxss,all")
+	fs.StringVar(&cfg.Checks, "checks", "all", "Comma-separated active checks to run: sqli,xss,cmdi,ssrf,ssrfadvanced,auth,passive,ssti,xxe,deser,graphql,websocket,blindxss,protopollution,massassignment,ratelimiting,apiversioning,all")
 	fs.StringVar(&cfg.Exclude, "exclude", "", "Regex of URLs to exclude from crawling/testing (e.g. logout endpoints)")
 	fs.StringVar(&cfg.Scope, "scope", "", "Regex restricting crawl to in-scope URLs. Defaults to same host as -url")
 	fs.StringVar(&cfg.JSLibsDB, "jslibs-db", "", "Path to directory containing external JS library vulnerability database JSON files")

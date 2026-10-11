@@ -18,6 +18,9 @@ type Enabled struct {
 	SQLi, XSS, CmdI, SSRF, Auth, Passive bool
 	SSTI, XXE, Deser, GraphQL            bool
 	WebSocket, BlindXSS                  bool
+	SSRFAdvanced, PrototypePollution     bool
+	MassAssignment, RateLimiting         bool
+	APIVersioning                        bool
 }
 
 // ParseChecks turns "all" or a comma list like "sqli,xss,passive" into an
@@ -28,6 +31,8 @@ func ParseChecks(spec string) Enabled {
 		return Enabled{
 			SQLi: true, XSS: true, CmdI: true, SSRF: true, Auth: true, Passive: true,
 			SSTI: true, XXE: true, Deser: true, GraphQL: true, WebSocket: true, BlindXSS: true,
+			SSRFAdvanced: true, PrototypePollution: true, MassAssignment: true,
+			RateLimiting: true, APIVersioning: true,
 		}
 	}
 	var e Enabled
@@ -57,6 +62,16 @@ func ParseChecks(spec string) Enabled {
 			e.WebSocket = true
 		case "blindxss", "bxss":
 			e.BlindXSS = true
+		case "ssrfadvanced", "ssrf-advanced":
+			e.SSRFAdvanced = true
+		case "protopollution", "prototype-pollution", "prototype":
+			e.PrototypePollution = true
+		case "massassignment", "mass-assignment":
+			e.MassAssignment = true
+		case "ratelimit", "rate-limiting", "ratelimiting":
+			e.RateLimiting = true
+		case "apiversioning", "api-versioning", "versioning":
+			e.APIVersioning = true
 		}
 	}
 	return e
@@ -196,6 +211,20 @@ func Run(ctx context.Context, cli *httpclient.Client, lim *ratelimiter.Limiter, 
 					add(CheckSSRF(ctx, lim, cli, t, p, opt.SSRFCallback, opt.SSRFListener))
 				}()
 			}
+			if opt.Checks.SSRFAdvanced && looksLikeURLParam(p.Name) {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					add(CheckAdvancedSSRF(ctx, lim, cli, t, p, opt.SSRFListener))
+				}()
+			}
+			if opt.Checks.PrototypePollution {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					add(CheckPrototypePollution(ctx, lim, cli, t, p))
+				}()
+			}
 			if opt.Checks.SSTI {
 				wg.Add(1)
 				go func() {
@@ -214,6 +243,29 @@ func Run(ctx context.Context, cli *httpclient.Client, lim *ratelimiter.Limiter, 
 					}))
 				}()
 			}
+		}
+
+		// Mass Assignment, Rate Limiting, and API Versioning are target-level checks
+		if opt.Checks.MassAssignment {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				add(CheckMassAssignment(ctx, lim, cli, t))
+			}()
+		}
+		if opt.Checks.RateLimiting {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				add(CheckRateLimiting(ctx, lim, cli, t))
+			}()
+		}
+		if opt.Checks.APIVersioning {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				add(CheckAPIVersioning(ctx, lim, cli, t))
+			}()
 		}
 	}
 	wg.Wait()

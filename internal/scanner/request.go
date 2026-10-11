@@ -28,6 +28,21 @@ func sendWithPayload(ctx context.Context, lim *ratelimiter.Limiter, cli *httpcli
 		return &httpclient.Exchange{Err: context.Canceled}
 	}
 	defer lim.Release()
+	return doWithPayload(cli, t, fuzzName, payload)
+}
+
+// sendWithPayloadNoLimit behaves exactly like sendWithPayload but does
+// NOT go through the shared rate limiter. It exists solely for the rate
+// limiting self-test, which needs to send a fast burst to measure the
+// *target's* own throttling without being slowed down by our own polite
+// client-side limiter (which would otherwise mask the target's behaviour).
+func sendWithPayloadNoLimit(cli *httpclient.Client, t model.Target, fuzzName, payload string) *httpclient.Exchange {
+	return doWithPayload(cli, t, fuzzName, payload)
+}
+
+// doWithPayload holds the actual request-building logic shared by
+// sendWithPayload (rate-limited) and sendWithPayloadNoLimit (unlimited).
+func doWithPayload(cli *httpclient.Client, t model.Target, fuzzName, payload string) *httpclient.Exchange {
 	reqURL := t.URL
 	extraHeaders := map[string]string{}
 

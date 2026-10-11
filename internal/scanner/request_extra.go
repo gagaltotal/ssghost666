@@ -27,6 +27,54 @@ func sendRawBodyNoAuth(ctx context.Context, lim *ratelimiter.Limiter, cli *httpc
 	return sendRawBodyWithAuth(ctx, lim, cli, t, method, contentType, body, false)
 }
 
+// sendQueryFragment appends a caller-supplied raw query fragment to the
+// target URL and sends the request with a GET (or the target's method if
+// set). It exists for checks like prototype pollution that need to inject
+// a *new* nested query parameter (e.g. "__proto__[x]=true") rather than
+// replace the value of one of the target's known params — something
+// sendWithPayload deliberately does not do, since it only substitutes
+// values of declared params.
+func sendQueryFragment(ctx context.Context, lim *ratelimiter.Limiter, cli *httpclient.Client, t model.Target, fragment string) *httpclient.Exchange {
+	if !lim.Acquire(ctx) {
+		return &httpclient.Exchange{Err: context.Canceled}
+	}
+	defer lim.Release()
+
+	reqURL := t.URL
+	if u, err := url.Parse(t.URL); err == nil {
+		q := u.Query()
+		for _, p := range t.Params {
+			if p.Location == model.LocQuery {
+				q.Set(p.Name, p.Sample)
+			}
+		}
+		encoded := q.Encode()
+		if encoded != "" {
+			encoded += "&"
+		}
+		encoded += fragment
+		u.RawQuery = encoded
+		reqURL = u.String()
+	} else {
+		sep := "?"
+		if strings.Contains(reqURL, "?") {
+			sep = "&"
+		}
+		reqURL = reqURL + sep + fragment
+	}
+
+	method := t.Method
+	if method == "" {
+		method = "GET"
+	}
+	// Query-fragment injection is a GET-style test; forcing GET avoids
+	// mutating resources via an unexpected method on the target.
+	if method != "GET" && method != "HEAD" {
+		method = "GET"
+	}
+	return cli.Do(method, reqURL, nil, nil)
+}
+
 func sendRawBodyWithAuth(ctx context.Context, lim *ratelimiter.Limiter, cli *httpclient.Client, t model.Target, method, contentType, body string, auth bool) *httpclient.Exchange {
 	if !lim.Acquire(ctx) {
 		return &httpclient.Exchange{Err: context.Canceled}
