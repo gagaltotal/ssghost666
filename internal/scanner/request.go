@@ -28,7 +28,9 @@ func sendWithPayload(ctx context.Context, lim *ratelimiter.Limiter, cli *httpcli
 		return &httpclient.Exchange{Err: context.Canceled}
 	}
 	defer lim.Release()
-	return doWithPayload(cli, t, fuzzName, payload)
+	ex := doWithPayload(cli, t, fuzzName, payload)
+	observeForAdaptive(lim, ex)
+	return ex
 }
 
 // sendWithPayloadNoLimit behaves exactly like sendWithPayload but does

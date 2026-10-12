@@ -72,7 +72,9 @@ func sendQueryFragment(ctx context.Context, lim *ratelimiter.Limiter, cli *httpc
 	if method != "GET" && method != "HEAD" {
 		method = "GET"
 	}
-	return cli.Do(method, reqURL, nil, nil)
+	ex := cli.Do(method, reqURL, nil, nil)
+	observeForAdaptive(lim, ex)
+	return ex
 }
 
 func sendRawBodyWithAuth(ctx context.Context, lim *ratelimiter.Limiter, cli *httpclient.Client, t model.Target, method, contentType, body string, auth bool) *httpclient.Exchange {
@@ -107,9 +109,13 @@ func sendRawBodyWithAuth(ctx context.Context, lim *ratelimiter.Limiter, cli *htt
 
 	if !auth {
 		if body == "" {
-			return cli.DoWithoutAuth(method, reqURL, nil)
+			ex := cli.DoWithoutAuth(method, reqURL, nil)
+			observeForAdaptive(lim, ex)
+			return ex
 		}
-		return cli.DoWithoutAuth(method, reqURL, rdr)
+		ex := cli.DoWithoutAuth(method, reqURL, rdr)
+		observeForAdaptive(lim, ex)
+		return ex
 	}
 
 	extra := map[string]string{}
@@ -117,7 +123,27 @@ func sendRawBodyWithAuth(ctx context.Context, lim *ratelimiter.Limiter, cli *htt
 		extra["Content-Type"] = contentType
 	}
 	if body == "" {
-		return cli.Do(method, reqURL, nil, extra)
+		ex := cli.Do(method, reqURL, nil, extra)
+		observeForAdaptive(lim, ex)
+		return ex
 	}
-	return cli.Do(method, reqURL, rdr, extra)
+	ex := cli.Do(method, reqURL, rdr, extra)
+	observeForAdaptive(lim, ex)
+	return ex
+}
+
+// observeForAdaptive forwards a completed exchange to the limiter's
+// adaptive controller, if one is attached. Centralised here so every
+// scanner request path reports uniformly without each call site having to
+// remember (and without the peer checks that call lim.Acquire directly
+// needing to change their signatures).
+func observeForAdaptive(lim *ratelimiter.Limiter, ex *httpclient.Exchange) {
+	if lim == nil || ex == nil {
+		return
+	}
+	status := 0
+	if ex.Response != nil {
+		status = ex.Response.StatusCode
+	}
+	lim.Observe(ex.ElapsedMS, status, ex.Err)
 }

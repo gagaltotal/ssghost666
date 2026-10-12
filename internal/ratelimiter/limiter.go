@@ -15,12 +15,14 @@ import (
 // Limiter combines a requests-per-second token bucket with a bounded
 // worker semaphore, and a hard cap on total requests for the whole run.
 type Limiter struct {
-	rl      *rate.Limiter
-	sem     chan struct{}
-	max     int64
-	count   int64
-	onLimit func()
-	once    sync.Once
+	rl        *rate.Limiter
+	sem       chan struct{}
+	max       int64
+	count     int64
+	onLimit   func()
+	once      sync.Once
+	adapt     *Adaptive
+	adaptOnce sync.Once
 }
 
 // New creates a Limiter allowing ratePerSec requests/sec, at most
@@ -72,3 +74,40 @@ func (l *Limiter) Release() { <-l.sem }
 
 // Count returns the number of requests accounted so far.
 func (l *Limiter) Count() int64 { return atomic.LoadInt64(&l.count) }
+
+// CurrentLimit returns the limiter's current requests-per-second ceiling.
+// It is safe to call concurrently and is used both by the adaptive
+// controller and by status output.
+func (l *Limiter) CurrentLimit() float64 { return float64(l.rl.Limit()) }
+
+// SetLimit changes the requests-per-second ceiling at runtime. It is safe
+// to call concurrently with Acquire (rate.Limiter is internally
+// synchronised) and is how the adaptive controller throttles a scan up or
+// down without recreating the limiter.
+func (l *Limiter) SetLimit(ratePerSec float64) {
+	if ratePerSec <= 0 {
+		ratePerSec = 1
+	}
+	l.rl.SetLimit(rate.Limit(ratePerSec))
+}
+
+// EnableAdaptive attaches (once) an adaptive rate controller to this
+// limiter and returns it. The controller watches request outcomes fed to
+// Observe and tunes the rate accordingly. Safe to call multiple times; the
+// first call wins.
+func (l *Limiter) EnableAdaptive() *Adaptive {
+	l.adaptOnce.Do(func() {
+		l.adapt = NewAdaptive(l, l.CurrentLimit())
+	})
+	return l.adapt
+}
+
+// Observe feeds one request's outcome (elapsed milliseconds, HTTP status
+// - 0 if none - and error) to the adaptive controller, if one is attached.
+// It is a cheap no-op otherwise, so call sites can always call it.
+func (l *Limiter) Observe(elapsedMs int64, status int, err error) {
+	if l == nil || l.adapt == nil {
+		return
+	}
+	l.adapt.Observe(elapsedMs, status, err)
+}

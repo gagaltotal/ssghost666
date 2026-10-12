@@ -16,28 +16,37 @@ import (
 // Like the SQLi time-based check, a hit must reproduce on an independent
 // second request before being reported, to filter out ordinary network
 // jitter. No payload here attempts anything beyond sleeping.
-func CheckCmdInjection(ctx context.Context, lim *ratelimiter.Limiter, cli *httpclient.Client, baseline *httpclient.Exchange, t model.Target, p model.Param) []model.Finding {
+//
+// mutate enables automatic payload mutation when a probe looks
+// WAF/filter-blocked (see payload_mutation.go).
+func CheckCmdInjection(ctx context.Context, lim *ratelimiter.Limiter, cli *httpclient.Client, baseline *httpclient.Exchange, t model.Target, p model.Param, mutate bool) []model.Finding {
 	threshold := int64(cmdiDelaySeconds*1000) - 1200
 
 	for _, payload := range cmdiTimePayloads() {
-		ex1 := sendWithPayload(ctx, lim, cli, t, p.Name, payload)
+		ex1, used, attempts := sendAdaptivePayload(mutate, payload, func(pl string) *httpclient.Exchange {
+			return sendWithPayload(ctx, lim, cli, t, p.Name, pl)
+		})
 		if ex1.Err != nil || ex1.Response == nil || ex1.ElapsedMS < threshold {
 			continue
 		}
 		time.Sleep(300 * time.Millisecond)
-		ex2 := sendWithPayload(ctx, lim, cli, t, p.Name, payload)
+		ex2 := sendWithPayload(ctx, lim, cli, t, p.Name, used)
 		if ex2.Err != nil || ex2.Response == nil || ex2.ElapsedMS < threshold {
 			continue
+		}
+		notes := fmt.Sprintf("Confirmation request 1: %dms, request 2: %dms, baseline: %dms", ex1.ElapsedMS, ex2.ElapsedMS, safeElapsed(baseline))
+		if n := mutationNote(attempts); n != "" {
+			notes += " | " + n + " Payload that got through: " + used
 		}
 		return []model.Finding{{
 			Category:    "OS Command Injection",
 			Severity:    model.SeverityCritical,
 			Title:       "Possible OS command injection in parameter \"" + p.Name + "\"",
-			Description: fmt.Sprintf("Sending %q made the response consistently take about %dms and %dms (two independent requests), consistent with a `sleep %d` shell command executing from injected input.", payload, ex1.ElapsedMS, ex2.ElapsedMS, cmdiDelaySeconds),
+			Description: fmt.Sprintf("Sending %q made the response consistently take about %dms and %dms (two independent requests), consistent with a `sleep %d` shell command executing from injected input.", used, ex1.ElapsedMS, ex2.ElapsedMS, cmdiDelaySeconds),
 			URL:         t.URL,
 			Method:      t.Method,
 			Parameter:   p.Name,
-			Evidence:    model.Evidence{RequestRaw: ex2.RequestRaw, ResponseRaw: ex2.ResponseRaw, Notes: fmt.Sprintf("Confirmation request 1: %dms, request 2: %dms, baseline: %dms", ex1.ElapsedMS, ex2.ElapsedMS, safeElapsed(baseline))},
+			Evidence:    model.Evidence{RequestRaw: ex2.RequestRaw, ResponseRaw: ex2.ResponseRaw, Notes: notes},
 			Remediation: "Never build shell commands from user input. Use language APIs that take argument arrays (not a shell string), and/or an allowlist of permitted values.",
 		}}
 	}

@@ -27,10 +27,12 @@ import (
 // a text match, which also means it silently fixes false positives the
 // text-match alone could produce (e.g. a payload that reflects inside an
 // HTML comment or an already-escaped attribute).
-func CheckXSS(ctx context.Context, lim *ratelimiter.Limiter, cli *httpclient.Client, t model.Target, p model.Param, browserConfirm bool, chromePath string) []model.Finding {
+func CheckXSS(ctx context.Context, lim *ratelimiter.Limiter, cli *httpclient.Client, t model.Target, p model.Param, browserConfirm bool, chromePath string, mutate bool) []model.Finding {
 	marker := Marker()
 	for _, payload := range xssPayloads(marker) {
-		ex := sendWithPayload(ctx, lim, cli, t, p.Name, payload)
+		ex, used, attempts := sendAdaptivePayload(mutate, payload, func(pl string) *httpclient.Exchange {
+			return sendWithPayload(ctx, lim, cli, t, p.Name, pl)
+		})
 		if ex.Err != nil || ex.Response == nil {
 			continue
 		}
@@ -40,23 +42,27 @@ func CheckXSS(ctx context.Context, lim *ratelimiter.Limiter, cli *httpclient.Cli
 			// browser-rendered XSS sink; skip to avoid a misleading finding.
 			continue
 		}
-		if !strings.Contains(ex.Body, payload) {
+		if !strings.Contains(ex.Body, used) {
 			continue
 		}
 
+		notes := "Marker used: " + marker
+		if n := mutationNote(attempts); n != "" {
+			notes += " | " + n + " Payload that got through: " + used
+		}
 		finding := model.Finding{
 			Category:    "Cross-Site Scripting (XSS)",
 			Severity:    model.SeverityHigh,
 			Title:       "Reflected XSS in parameter \"" + p.Name + "\" (unconfirmed — reflection only)",
-			Description: fmt.Sprintf("The payload %q was reflected back in the response body completely unescaped, meaning a browser would execute it. Content-Type was %q.", payload, ct),
+			Description: fmt.Sprintf("The payload %q was reflected back in the response body completely unescaped, meaning a browser would execute it. Content-Type was %q.", used, ct),
 			URL:         t.URL,
 			Method:      t.Method,
 			Parameter:   p.Name,
-			Evidence:    model.Evidence{RequestRaw: ex.RequestRaw, ResponseRaw: ex.ResponseRaw, Notes: "Marker used: " + marker},
+			Evidence:    model.Evidence{RequestRaw: ex.RequestRaw, ResponseRaw: ex.ResponseRaw, Notes: notes},
 			Remediation: "HTML-escape (or use a templating engine that auto-escapes) any user input rendered into HTML output. Consider a Content-Security-Policy as defense in depth.",
 		}
 
-		canConfirm := browserConfirm && t.Method == "GET" && strings.Contains(payload, "window[") &&
+		canConfirm := browserConfirm && t.Method == "GET" && strings.Contains(used, "window[") &&
 			(p.Location == model.LocQuery || p.Location == model.LocPath)
 		if canConfirm {
 			confirmed, err := confirmXSSInBrowser(ctx, chromePath, ex.Request.URL.String(), marker)

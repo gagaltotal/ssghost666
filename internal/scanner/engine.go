@@ -21,6 +21,7 @@ type Enabled struct {
 	SSRFAdvanced, PrototypePollution     bool
 	MassAssignment, RateLimiting         bool
 	APIVersioning                        bool
+	JWT, OAuth, Session                  bool
 }
 
 // ParseChecks turns "all" or a comma list like "sqli,xss,passive" into an
@@ -33,6 +34,7 @@ func ParseChecks(spec string) Enabled {
 			SSTI: true, XXE: true, Deser: true, GraphQL: true, WebSocket: true, BlindXSS: true,
 			SSRFAdvanced: true, PrototypePollution: true, MassAssignment: true,
 			RateLimiting: true, APIVersioning: true,
+			JWT: true, OAuth: true, Session: true,
 		}
 	}
 	var e Enabled
@@ -72,6 +74,12 @@ func ParseChecks(spec string) Enabled {
 			e.RateLimiting = true
 		case "apiversioning", "api-versioning", "versioning":
 			e.APIVersioning = true
+		case "jwt", "jwtfuzz", "jwt-fuzz", "jwt-fuzzing":
+			e.JWT = true
+		case "oauth", "oidc", "oauth2":
+			e.OAuth = true
+		case "session", "sessionmgmt", "session-management":
+			e.Session = true
 		}
 	}
 	return e
@@ -87,6 +95,8 @@ type Options struct {
 	OOBCallback    *OOBCallback        // marker-keyed callback for out-of-band XXE confirmation
 	BrowserConfirm bool                // true if -js-render was set: attempt real-browser XSS execution confirmation
 	DOMXSSCheck    bool                // true to enable DOM-based XSS detection
+	MutatePayload  bool                // true to auto-encode/obfuscate payloads when a WAF/filter blocks them
+	BearerToken    string              // the -bearer value, for active JWT fuzzing
 	ChromePath     string              // optional explicit Chrome/Chromium binary path
 	OnFinding      func(model.Finding) // progress callback, called as each finding is confirmed
 	OnProgress     func(string)
@@ -187,21 +197,21 @@ func Run(ctx context.Context, cli *httpclient.Client, lim *ratelimiter.Limiter, 
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					add(CheckSQLi(ctx, lim, cli, baseline, t, p))
+					add(CheckSQLi(ctx, lim, cli, baseline, t, p, opt.MutatePayload))
 				}()
 			}
 			if opt.Checks.XSS {
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					add(CheckXSS(ctx, lim, cli, t, p, opt.BrowserConfirm, opt.ChromePath))
+					add(CheckXSS(ctx, lim, cli, t, p, opt.BrowserConfirm, opt.ChromePath, opt.MutatePayload))
 				}()
 			}
 			if opt.Checks.CmdI {
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					add(CheckCmdInjection(ctx, lim, cli, baseline, t, p))
+					add(CheckCmdInjection(ctx, lim, cli, baseline, t, p, opt.MutatePayload))
 				}()
 			}
 			if opt.Checks.SSRF && looksLikeURLParam(p.Name) {
@@ -229,7 +239,7 @@ func Run(ctx context.Context, cli *httpclient.Client, lim *ratelimiter.Limiter, 
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					add(CheckSSTI(ctx, lim, cli, baseline, t, p))
+					add(CheckSSTI(ctx, lim, cli, baseline, t, p, opt.MutatePayload))
 				}()
 			}
 			if opt.Checks.BlindXSS {
@@ -278,6 +288,19 @@ func Run(ctx context.Context, cli *httpclient.Client, lim *ratelimiter.Limiter, 
 	}
 	if opt.Checks.WebSocket {
 		add(RunWebSocketChecks(ctx, lim, cli, targets, opt.HasAuth))
+	}
+
+	// JWT fuzzing needs a real token to work from, so it only runs when the
+	// user authenticated the scan with -bearer. OAuth/OIDC and session
+	// management need only what crawling already discovered.
+	if opt.Checks.JWT && strings.TrimSpace(opt.BearerToken) != "" {
+		add(CheckJWTFuzzing(ctx, lim, cli, opt.BearerToken, targets))
+	}
+	if opt.Checks.OAuth {
+		add(CheckOAuthOIDC(ctx, lim, cli, targets))
+	}
+	if opt.Checks.Session {
+		add(CheckSessionManagement(ctx, lim, cli, captured, targets))
 	}
 
 	// Final blind-XSS sweep: any callback that arrived after its own

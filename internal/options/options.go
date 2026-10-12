@@ -11,7 +11,7 @@ import (
 )
 
 // Version is the tool version, set at build time via -ldflags if desired.
-var Version = "0.1.1"
+var Version = "0.1.2"
 
 // headerList implements flag.Value so -header can be passed multiple times.
 type headerList []string
@@ -53,6 +53,12 @@ type Config struct {
 	Exclude  string
 	Scope    string
 	JSLibsDB string // Path to directory containing external JS library vulnerability databases
+
+	// Adaptive pacing, smart crawling and resumable scans.
+	AdaptiveRate  bool   // auto lower/raise -rate based on server health
+	SmartCrawl    bool   // follow pagination params and skip duplicate content
+	MutatePayload bool   // auto-encode/obfuscate payloads blocked by a WAF/filter
+	ResumePath    string // path to a scan-state file to resume from / save to ("" disables)
 
 	SSRFCallback       string
 	EnableSSRFListener bool
@@ -101,10 +107,15 @@ func Parse(args []string) *Config {
 	fs.StringVar(&cfg.Wordlist, "wordlist", "", "Path to a custom wordlist for hidden file/endpoint discovery (one path per line). Defaults to a small built-in list")
 	fs.BoolVar(&cfg.NoDiscover, "no-discover", false, "Disable wordlist-based hidden endpoint discovery")
 
-	fs.StringVar(&cfg.Checks, "checks", "all", "Comma-separated active checks to run: sqli,xss,cmdi,ssrf,ssrfadvanced,auth,passive,ssti,xxe,deser,graphql,websocket,blindxss,protopollution,massassignment,ratelimiting,apiversioning,all")
+	fs.StringVar(&cfg.Checks, "checks", "all", "Comma-separated active checks to run: sqli,xss,cmdi,ssrf,ssrfadvanced,auth,passive,ssti,xxe,deser,graphql,websocket,blindxss,protopollution,massassignment,ratelimiting,apiversioning,jwt,oauth,session,all")
 	fs.StringVar(&cfg.Exclude, "exclude", "", "Regex of URLs to exclude from crawling/testing (e.g. logout endpoints)")
 	fs.StringVar(&cfg.Scope, "scope", "", "Regex restricting crawl to in-scope URLs. Defaults to same host as -url")
 	fs.StringVar(&cfg.JSLibsDB, "jslibs-db", "", "Path to directory containing external JS library vulnerability database JSON files")
+
+	fs.BoolVar(&cfg.AdaptiveRate, "adaptive-rate", true, "Automatically lower -rate when the target slows down or starts erroring, and raise it again once the target recovers")
+	fs.BoolVar(&cfg.SmartCrawl, "smart-crawl", true, "Detect pagination parameters (?page=, ?offset=...) and skip duplicate-content pages during crawling")
+	fs.BoolVar(&cfg.MutatePayload, "mutate-payload", true, "When a WAF/filter blocks a payload, automatically retry equivalent encoded/obfuscated variants")
+	fs.StringVar(&cfg.ResumePath, "resume", "", "Path to a state file used to save/restore crawl progress, so an interrupted or paused scan can continue where it left off")
 
 	fs.StringVar(&cfg.SSRFCallback, "ssrf-callback", "", "Out-of-band callback URL/domain you control (e.g. Burp Collaborator, interact.sh) used as the SSRF payload target")
 	fs.BoolVar(&cfg.EnableSSRFListener, "ssrf-listener", true, "Enable local SSRF callback listener for in-band detection (enabled by default)")

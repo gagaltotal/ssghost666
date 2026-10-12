@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 
+	"ssghost666/internal/crawlstate"
 	"ssghost666/internal/httpclient"
 	"ssghost666/internal/model"
 	"ssghost666/internal/ratelimiter"
@@ -28,6 +29,17 @@ type Options struct {
 	OnVisit  func(url string) // progress callback, called once per page fetched
 	OnJSFile func(url string) // progress callback for discovered JS files
 	OnRobots func(paths int)  // progress callback after robots.txt parsing
+
+	// State, when non-nil, enables two behaviours: URLs already marked
+	// visited (from a previous, resumed run) are skipped when SkipVisited
+	// is set, and response bodies are content-hashed so byte-identical
+	// pages reachable via different URLs aren't crawled/scanned twice.
+	State       *crawlstate.State
+	SkipVisited bool
+
+	// SmartCrawl additionally follows detected pagination (numeric
+	// page/offset params) so listing pages beyond page 1 are discovered.
+	SmartCrawl bool
 }
 
 // Crawl performs a breadth-first crawl of seed up to Options.Depth,
@@ -72,7 +84,8 @@ func Crawl(ctx context.Context, cli *httpclient.Client, lim *ratelimiter.Limiter
 			visitedMu.Lock()
 			already := visited[u]
 			tooMany := len(visited) >= opt.MaxPages
-			if !already && !tooMany && opt.InScope(u) && !isStaticAsset(u) {
+			resumed := opt.SkipVisited && opt.State != nil && opt.State.Visited(u)
+			if !already && !tooMany && !resumed && opt.InScope(u) && !isStaticAsset(u) {
 				visited[u] = true
 				toVisit = append(toVisit, u)
 			}
@@ -104,6 +117,21 @@ func Crawl(ctx context.Context, cli *httpclient.Client, lim *ratelimiter.Limiter
 					opt.OnVisit(rawURL)
 				}
 				pu, _ := url.Parse(rawURL)
+
+				// Resume bookkeeping + duplicate-content suppression. A page
+				// whose body is byte-identical to one already seen under a
+				// different URL (pagination that clamps, an SPA shell served
+				// for many routes) is recorded as visited but not re-added as
+				// a target/captured response, so it isn't scanned twice.
+				ct := ex.Response.Header.Get("Content-Type")
+				if opt.State != nil {
+					if strings.Contains(ct, "html") && opt.State.DuplicateContent(rawURL, ex.Body) {
+						opt.State.MarkVisited(rawURL)
+						return
+					}
+					opt.State.MarkVisited(rawURL)
+				}
+
 				res.Captured = append(res.Captured, toCaptured(ex, rawURL))
 
 				// Every crawled GET page becomes a scan target, not just
@@ -117,7 +145,6 @@ func Crawl(ctx context.Context, cli *httpclient.Client, lim *ratelimiter.Limiter
 					addTarget(queryTarget(rawURL))
 				}
 
-				ct := ex.Response.Header.Get("Content-Type")
 				if strings.Contains(ct, "html") || ct == "" {
 					results[i] = pageOut{page: extractPage(pu, ex.Body), base: pu}
 				}
@@ -135,6 +162,13 @@ func Crawl(ctx context.Context, cli *httpclient.Client, lim *ratelimiter.Limiter
 			jsFiles = append(jsFiles, r.page.JSFiles...)
 			for _, f := range r.page.Forms {
 				addTarget(formToTarget(f))
+			}
+			// Smart crawling: recognise pagination on this page and queue
+			// the next page(s), so listings deeper than page 1 get crawled
+			// too. Capped small so this stays a targeted nudge, not an
+			// unbounded crawl of an archive.
+			if opt.SmartCrawl {
+				nextLinks = append(nextLinks, DetectPagination(r.base, r.page.Links, 5)...)
 			}
 		}
 

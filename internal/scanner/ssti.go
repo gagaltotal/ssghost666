@@ -118,7 +118,10 @@ func matchSSTIError(body string) string {
 }
 
 // CheckSSTI tests one parameter for template injection.
-func CheckSSTI(ctx context.Context, lim *ratelimiter.Limiter, cli *httpclient.Client, baseline *httpclient.Exchange, t model.Target, p model.Param) []model.Finding {
+//
+// mutate enables automatic payload mutation when a probe looks
+// WAF/filter-blocked (see payload_mutation.go).
+func CheckSSTI(ctx context.Context, lim *ratelimiter.Limiter, cli *httpclient.Client, baseline *httpclient.Exchange, t model.Target, p model.Param, mutate bool) []model.Finding {
 	product := sstiProduct()
 
 	// Tier 1: echo-anchored arithmetic. A probe counts as evaluation
@@ -126,8 +129,11 @@ func CheckSSTI(ctx context.Context, lim *ratelimiter.Limiter, cli *httpclient.Cl
 	// payload and instead contains its product. A template error or a
 	// known engine error signature is an equally strong secondary hint.
 	var evidence *httpclient.Exchange
+	var evidenceAttempts []string
 	for _, payload := range sstiArithmeticProbes() {
-		ex := sendWithPayload(ctx, lim, cli, t, p.Name, payload)
+		ex, _, attempts := sendAdaptivePayload(mutate, payload, func(pl string) *httpclient.Exchange {
+			return sendWithPayload(ctx, lim, cli, t, p.Name, pl)
+		})
 		if ex.Err != nil || ex.Response == nil || len(ex.Body) == 0 {
 			continue
 		}
@@ -136,6 +142,7 @@ func CheckSSTI(ctx context.Context, lim *ratelimiter.Limiter, cli *httpclient.Cl
 		}
 		if strings.Contains(ex.Body, product) || matchSSTIError(ex.Body) != "" {
 			evidence = ex
+			evidenceAttempts = attempts
 			break
 		}
 	}
@@ -145,7 +152,9 @@ func CheckSSTI(ctx context.Context, lim *ratelimiter.Limiter, cli *httpclient.Cl
 
 	// Tier 2: name the engine with a conformance payload.
 	for _, e := range sstiEngines() {
-		ex := sendWithPayload(ctx, lim, cli, t, p.Name, e.Payload)
+		ex, _, attempts := sendAdaptivePayload(mutate, e.Payload, func(pl string) *httpclient.Exchange {
+			return sendWithPayload(ctx, lim, cli, t, p.Name, pl)
+		})
 		if ex.Err != nil || ex.Response == nil {
 			continue
 		}
@@ -155,6 +164,10 @@ func CheckSSTI(ctx context.Context, lim *ratelimiter.Limiter, cli *httpclient.Cl
 		if !strings.Contains(ex.Body, e.Expect) {
 			continue
 		}
+		notes := "Engine confirmed via " + e.Name + " payload " + e.Payload
+		if n := mutationNote(attempts); n != "" {
+			notes += " | " + n
+		}
 		return []model.Finding{{
 			Category:    "SSTI",
 			Severity:    e.Severity,
@@ -163,11 +176,15 @@ func CheckSSTI(ctx context.Context, lim *ratelimiter.Limiter, cli *httpclient.Cl
 			URL:         t.URL,
 			Method:      t.Method,
 			Parameter:   p.Name,
-			Evidence:    model.Evidence{RequestRaw: ex.RequestRaw, ResponseRaw: ex.ResponseRaw, Notes: "Engine confirmed via " + e.Name + " payload " + e.Payload},
+			Evidence:    model.Evidence{RequestRaw: ex.RequestRaw, ResponseRaw: ex.ResponseRaw, Notes: notes},
 			Remediation: "Never build template source from user input. Pass untrusted values only as data into a fixed template, and/or use a sandboxed template environment with dangerous constructs disabled.",
 		}}
 	}
 
+	notes := "Arithmetic probe evaluated; engine not fingerprinted."
+	if n := mutationNote(evidenceAttempts); n != "" {
+		notes += " | " + n
+	}
 	return []model.Finding{{
 		Category:    "SSTI",
 		Severity:    model.SeverityMedium,
@@ -176,7 +193,7 @@ func CheckSSTI(ctx context.Context, lim *ratelimiter.Limiter, cli *httpclient.Cl
 		URL:         t.URL,
 		Method:      t.Method,
 		Parameter:   p.Name,
-		Evidence:    model.Evidence{RequestRaw: evidence.RequestRaw, ResponseRaw: evidence.ResponseRaw, Notes: "Arithmetic probe evaluated; engine not fingerprinted."},
+		Evidence:    model.Evidence{RequestRaw: evidence.RequestRaw, ResponseRaw: evidence.ResponseRaw, Notes: notes},
 		Remediation: "Avoid evaluating user input as template/expression code; use fixed templates with data-only interpolation.",
 	}}
 }

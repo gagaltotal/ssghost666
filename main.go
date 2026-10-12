@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"ssghost666/internal/crawler"
+	"ssghost666/internal/crawlstate"
 	"ssghost666/internal/httpclient"
 	"ssghost666/internal/model"
 	"ssghost666/internal/openapi"
@@ -66,14 +67,47 @@ func main() {
 		term.Warn("reached -max-requests (%d); stopping further requests. Raise it with -max-requests if you need a larger scan.", cfg.MaxRequests)
 	})
 
+	// Adaptive rate limiting: hand the limiter an observer that lowers -rate
+	// when the target slows down or starts returning errors, and raises it
+	// again once responses look healthy, so a scan shares a server with
+	// real traffic instead of hammering it at a fixed speed.
+	if cfg.AdaptiveRate {
+		lim.EnableAdaptive()
+		term.Info("adaptive rate limiting enabled (base %.1f req/s; throttles down when the target slows/errs, recovers afterwards)", cfg.RatePerSec)
+	}
+
+	// Resume support: load previously-visited URLs / known page hashes from
+	// the state file so an interrupted or deliberately paused scan picks up
+	// where it stopped instead of re-crawling everything from scratch.
+	var scanState *crawlstate.State
+	if cfg.ResumePath != "" {
+		st, err := crawlstate.Load(cfg.ResumePath, cfg.TargetURL)
+		if err != nil {
+			term.Warn("couldn't load resume state from %s: %v (starting fresh)", cfg.ResumePath, err)
+		} else {
+			scanState = st
+			if n := st.VisitedCount(); n > 0 {
+				term.Info("resuming: %d URL(s) already visited in %s will be skipped", n, cfg.ResumePath)
+			}
+			defer func() {
+				if err := st.Save(); err != nil {
+					term.Warn("couldn't save resume state to %s: %v", cfg.ResumePath, err)
+				}
+			}()
+		}
+	}
+
 	var allTargets []model.Target
 	var allCaptured []model.CapturedResponse
 
 	// --- Phase 1: crawl --------------------------------------------------
 	term.Section("crawling")
 	cres := crawler.Crawl(ctx, cli, lim, seed, crawler.Options{
-		Depth:   cfg.Depth,
-		InScope: inScope,
+		Depth:       cfg.Depth,
+		InScope:     inScope,
+		State:       scanState,
+		SkipVisited: scanState != nil,
+		SmartCrawl:  cfg.SmartCrawl,
 		OnVisit: func(u string) {
 			if cfg.Verbose {
 				term.Info("visited %s", u)
@@ -99,7 +133,12 @@ func main() {
 		term.Section("js rendering")
 		renderURLs := pickRenderCandidates(seed.String(), allCaptured, 6)
 		term.Info("rendering %d page(s) with headless Chrome (this can take a while)...", len(renderURLs))
-		links, jsTargets := crawler.RenderMany(ctx, cfg.ChromePath, renderURLs, 4*time.Second, func(pageURL string, newLinks, newRequests int, rerr error) {
+		links, jsTargets := crawler.RenderMany(ctx, renderURLs, crawler.RenderOptions{
+			ChromePath: cfg.ChromePath,
+			Settle:     4 * time.Second,
+			Smart:      cfg.SmartCrawl,
+			MaxRounds:  3,
+		}, func(pageURL string, newLinks, newRequests int, rerr error) {
 			if rerr != nil {
 				term.Warn("js-render %s: %v", pageURL, rerr)
 				return
@@ -250,6 +289,8 @@ func main() {
 		OOBCallback:    oobCallback,
 		BrowserConfirm: cfg.JSRender,
 		DOMXSSCheck:    cfg.DOMXSSCheck,
+		MutatePayload:  cfg.MutatePayload,
+		BearerToken:    cfg.Bearer,
 		ChromePath:     cfg.ChromePath,
 		OnFinding:      func(f model.Finding) { term.FindingLive(f) },
 		OnProgress: func(s string) {
@@ -282,7 +323,8 @@ func main() {
 
 func checksLabel(e scanner.Enabled) string {
 	if e.SQLi && e.XSS && e.CmdI && e.SSRF && e.Auth && e.Passive &&
-		e.SSTI && e.XXE && e.Deser && e.GraphQL && e.WebSocket && e.BlindXSS {
+		e.SSTI && e.XXE && e.Deser && e.GraphQL && e.WebSocket && e.BlindXSS &&
+		e.JWT && e.OAuth && e.Session {
 		return "all"
 	}
 	var on []string
@@ -290,7 +332,7 @@ func checksLabel(e scanner.Enabled) string {
 		"sqli": e.SQLi, "xss": e.XSS, "cmdi": e.CmdI, "ssrf": e.SSRF,
 		"auth": e.Auth, "passive": e.Passive, "ssti": e.SSTI, "xxe": e.XXE,
 		"deser": e.Deser, "graphql": e.GraphQL, "websocket": e.WebSocket,
-		"blindxss": e.BlindXSS,
+		"blindxss": e.BlindXSS, "jwt": e.JWT, "oauth": e.OAuth, "session": e.Session,
 	} {
 		if v {
 			on = append(on, name)

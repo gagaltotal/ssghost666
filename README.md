@@ -6,9 +6,9 @@ miliki atau telah mendapat izin eksplisit untuk diuji: menemukan
 halaman/endpoint, meng-crawl rute yang dimuat JavaScript, mengimpor
 definisi API, lalu menjalankan pemeriksaan terarah untuk SQL injection,
 XSS (termasuk blind/stored), command injection, SSRF, SSTI, XXE, insecure
-deserialization, GraphQL, WebSocket, masalah autentikasi, dan beberapa
-pemeriksaan pasif — dengan setiap temuan membawa bukti request/response
-mentah.
+deserialization, GraphQL, WebSocket, JWT/OAuth/session, masalah autentikasi,
+dan beberapa pemeriksaan pasif — dengan setiap temuan membawa bukti
+request/response mentah.
 
 > **Hanya pindai aplikasi yang Anda miliki atau yang secara eksplisit
 > mengizinkan Anda mengujinya.** Alat ini mencetak pengingat ini setiap
@@ -47,6 +47,13 @@ mentah.
 - **Output terminal berwarna**, langsung terbaca, dengan temuan dicetak live saat ditemukan.
 - **Laporan HTML** (`-out report.html`) mandiri (tanpa dependensi eksternal) berisi bukti request/response lengkap per temuan, dengan auto-escaping yang benar (payload yang direfleksikan tidak akan "hidup" sebagai HTML di laporan) dan redaksi otomatis header `Authorization`/`Cookie` (nonaktifkan dengan `-no-redact`).
 - **Rate limiting & concurrency yang sopan secara default** (`-rate`, `-concurrency`, `-max-requests`) — setiap request HTTP sungguhan melewati limiter yang sama, bukan hanya longgar per "tugas".
+- **Mutasi payload otomatis (bypass WAF/filter)** (`-mutate-payload`, aktif default): saat sebuah payload ditolak WAF/filter — terdeteksi dari status blok (403/406/419/429/501/999) atau signature WAF yang dikenal (Cloudflare, AWS WAF, ModSecurity, Sucuri, Imperva, Akamai, F5, Barracuda, Wordfence) di header maupun body — SSGhost666 otomatis mengirim ulang payload yang sama dalam beberapa varian encoding/obfuscation (case variation, SQL comment whitespace `UNION/**/SELECT`, full URL-encoding, double URL-encoding, HTML hex entities, unicode escapes) dan memakai varian pertama yang lolos untuk logika deteksinya. Setiap temuan mencatat varian mana saja yang dicoba. Nonaktifkan dengan `-mutate-payload=false`.
+- **JWT fuzzing lanjutan** (`-checks jwt`, memakai `-bearer`): selain deteksi `alg: none`, modul ini membongkar token untuk **brute-force weak HS256 secret** (~130 secret bocor/umum seperti `secret`, `changeme`, `jwt-secret`, kunci contoh dari dokumentasi), **algorithm confusion RS256→HS256** (mengambil public key dari JWKS endpoint `/.well-known/jwks.json` atau OIDC discovery, lalu menandatangani token palsu dengan kunci publik sebagai HMAC secret), **klaim escalation** (`role`/`admin`/`isAdmin` dinaikkan, `sub`/`user` diubah) dan **ekspirasi** (`exp` dihilangkan, `iss`/`aud` dikosongkan). Token forged hanya dianggap berhasil setelah **kontrol negatif** (token sengaja rusak) ditolak target — jadi server yang menerima semua token tidak menghasilkan false positive.
+- **OAuth / OIDC flow testing** (`-checks oauth`): menemukan endpoint authorization (dari crawl maupun path konvensional `/oauth/authorize`, `/auth`, `/login`, dst), lalu menguji **redirect_uri validation bypass** dengan 10 varian (suffix/prefix abuse, `@`-trick, subdomain, open redirect bertingkat, path traversal, dan lainnya), **PKCE missing** (tidak ada `code_challenge`), **state parameter abuse** (state hilang atau bisa diprediksi), dan **token/code leakage** lewat `Location` header atau `Referer`.
+- **Session management testing** (`-checks session`): menganalisis cookie sesi yang tertangkap dan melaporkan **session ID yang lemah** (entropi Shannon rendah, nilai sekuensial/prediktabel, nilai bernama `JSESSIONID=1001` dsb), **flag keamanan cookie** yang hilang (`HttpOnly`/`Secure`/`SameSite`), **masa berlaku berlebihan** (`Max-Age`/`Expires` terlalu panjang), **scope cookie** yang terlalu luas (`Domain`/`Path`), dan indikasi **session fixation** (nilai sesi tidak berubah setelah request ber-kredensial).
+- **Adaptive rate limiting** (`-adaptive-rate`, aktif default): limiter mengamati latensi, status, dan error tiap request dengan baseline bergerak (EWMA), lalu menurunkan rate saat target melambat atau mulai membalas error/429/5xx (hingga 1/5 rate awal) dan menaikkannya kembali saat respons sehat lagi (maksimum 2x rate awal). Nonaktifkan dengan `-adaptive-rate=false`.
+- **Smart crawling** (`-smart-crawl`, aktif default): mendeteksi pola pagination numerik umum (`?page=`, `?p=`, `?offset=`, `?start=`, `?skip=`, `?from=`, dst) dan otomatis mengantre halaman berikutnya (nilai +1/+2, dibatasi 5 URL per halaman agar tetap terarah, bukan crawl arsip tanpa batas). Digabung dengan **suppression konten duplikat** berbasis hash respons (sha256) — halaman yang isinya identik di banyak URL (SPA shell, pagination yang "menjepit" di halaman terakhir) tidak di-crawl dan tidak dipindai berulang. Nonaktifkan dengan `-smart-crawl=false`.
+- **Resume capability** (`-resume state.json`): status scan (URL yang sudah dikunjungi + hash konten yang sudah dilihat) disimpan ke file JSON dan dimuat ulang saat dijalankan kembali, sehingga scan jangka panjang yang terputus (atau sengaja di-pause dengan Ctrl-C) bisa dilanjutkan tanpa mengulang crawl dari awal. Penulisan bersifat atomik (tulis ke file sementara lalu `rename`), dan state untuk target yang berbeda otomatis diabaikan agar tidak salah melewati halaman.
 
 ## Instalasi
 
@@ -133,7 +140,8 @@ discovery, checks, SSRF callback, dll).
 
 Nilai yang didukung: `sqli`, `xss`, `cmdi`, `ssrf`, `ssrfadvanced`, `auth`, `passive`,
 `ssti`, `xxe`, `deser`, `graphql`, `websocket`, `blindxss`, `protopollution`,
-`massassignment`, `ratelimiting`, `apiversioning`, atau `all` (bawaan).
+`massassignment`, `ratelimiting`, `apiversioning`, `jwt`, `oauth`, `session`,
+atau `all` (bawaan).
 
 Contoh untuk API security testing:
 ```bash
@@ -276,20 +284,71 @@ Format file JSON:
 }
 ```
 
+#### JWT Fuzzing Lanjutan
+
+Berikan token Bearer dan aktifkan pemeriksaan `jwt` untuk menguji weak secret, algorithm confusion, dan klaim yang bisa dimanipulasi:
+
+```bash
+./ssghost666 -url https://api.anda.com \
+  -bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9... \
+  -checks jwt
+```
+
+Modul ini akan mencoba brute-force secret HS256, menurunkan public key dari JWKS/OIDC discovery untuk serangan RS256→HS256, serta menguji eskalasi klaim dan abuse `exp`. Token palsu hanya dilaporkan jika kontrol negatif (token rusak) tetap ditolak target.
+
+#### OAuth / OIDC Flow Testing
+
+```bash
+./ssghost666 -url https://app.anda.com -checks oauth
+```
+
+Menemukan endpoint authorization dari crawl dan path konvensional, lalu menguji `redirect_uri` bypass, keberadaan PKCE, `state` parameter, dan potensi kebocoran code/token.
+
+#### Session Management Testing
+
+```bash
+./ssghost666 -url https://app.anda.com -cookie "session=abc" -checks session
+```
+
+Menganalisis cookie sesi yang tertangkap: entropi/prediktabilitas session ID, flag `HttpOnly`/`Secure`/`SameSite`, masa berlaku berlebihan, scope cookie yang terlalu luas, dan indikasi session fixation.
+
+#### Adaptive Rate Limiting, Smart Crawling, dan Resume
+
+Ketiganya aktif secara default dan bisa dikombinasikan untuk scan jangka panjang yang sopan terhadap server target:
+
+```bash
+./ssghost666 -url https://app.anda.com \
+  -rate 20 \
+  -smart-crawl \
+  -adaptive-rate \
+  -resume ~/.ssghost666/scan-state.json
+```
+
+- `-adaptive-rate` menurunkan rate otomatis saat target melambat/error, lalu memulihkannya saat normal.
+- `-smart-crawl` mengikuti pagination (`?page=`, `?offset=`, dst) dan melewati konten duplikat.
+- `-resume <file>` menyimpan & memuat state scan sehingga bisa di-pause (Ctrl-C) dan dilanjutkan nanti.
+
+Nonaktifkan yang tidak diperlukan dengan `-adaptive-rate=false`, `-smart-crawl=false`, atau `-mutate-payload=false`.
+
 ## Arsitektur singkat
 
 ```
 main.go                     — merangkai semua fase
 internal/options             — parsing flag CLI
 internal/httpclient          — klien HTTP (proxy, auth, TLS, evidence mentah)
-internal/ratelimiter         — rate limit + concurrency bersama
+internal/ratelimiter         — rate limit + concurrency bersama (+ adaptive)
+internal/crawlstate          — state scan (visited + hash konten) untuk resume & dedup
 internal/browser             — peluncur tab headless Chrome bersama (dipakai crawler & scanner)
-internal/crawler             — crawl statis, ekstraksi JS, discovery (+ kalibrasi soft-404), js-render (chromedp)
+internal/crawler             — crawl statis, ekstraksi JS, discovery (+ kalibrasi soft-404), js-render (chromedp), smart crawl/pagination
 internal/openapi             — parser OpenAPI 3 / Swagger 2 → target, termasuk resolver $ref/allOf
 internal/scanner             — setiap modul pemeriksaan + engine orkestrasi
   sqli.go                      error-based, boolean-based, time-based
   xss.go + xss_confirm.go      deteksi refleksi + konfirmasi eksekusi browser
   cmdi.go, ssrf.go, auth.go    command injection, SSRF, CORS/broken-access/JWT
+  jwt_fuzz.go                  weak HS256 secret, alg confusion, klaim/exp abuse
+  oauth.go                     OAuth/OIDC redirect_uri bypass, PKCE, state
+  session.go                   session ID/flag/lifetime/scope + fixation
+  payload_mutation.go          deteksi WAF + mutasi payload (encoding/obfuscation)
   ssti.go                      template injection (aritmatika + fingerprint engine)
   xxe.go + oob.go              XML external entity + listener callback OOB
   deserialization.go           signature serialized object + konfirmasi sleep
@@ -360,6 +419,13 @@ Fitur-fitur berikut yang sebelumnya direncanakan **sudah selesai diimplementasik
 13. **REST API mass assignment** — inject 20+ protected fields (role, isAdmin, price, balance, isVerified) ke JSON/form requests untuk menemukan field yang seharusnya read-only tapi dapat dimodifikasi.
 14. **Rate limiting & resource exhaustion** — burst testing (25 request untuk GET/HEAD/OPTIONS, 12 untuk POST/PUT/PATCH, **tanpa** DELETE agar tidak destruktif) memakai body baseline yang sama untuk mendeteksi missing/weak rate limiting, khususnya pada expensive operations (upload, report, search).
 15. **API versioning issues** — scan v0-v5 untuk menemukan legacy versions yang masih aktif dengan inconsistent security headers, missing deprecation warnings, dan potensi unpatched vulnerabilities.
+16. **Mutasi payload otomatis** — payload yang ditolak WAF/filter otomatis diulang dalam beberapa varian encoding/obfuscation (case variation, SQL comment whitespace, full/double URL-encoding, HTML hex entities, unicode escapes); varian pertama yang lolos dipakai untuk deteksi, dan temuan mencatat varian yang dicoba.
+17. **JWT fuzzing lanjutan** — brute-force weak HS256 secret (~130 kandidat), algorithm confusion RS256→HS256 via JWKS/OIDC discovery, klaim escalation, dan abuse `exp`/`iss`/`aud`, dengan kontrol negatif agar server yang menerima semua token tidak menghasilkan false positive.
+18. **OAuth/OIDC flow testing** — deteksi endpoint authorization, 10 varian `redirect_uri` bypass, PKCE missing, `state` parameter abuse, dan kebocoran code/token.
+19. **Session management testing** — entropi/prediktabilitas session ID, flag cookie (`HttpOnly`/`Secure`/`SameSite`), masa berlaku berlebihan, scope cookie terlalu luas, dan indikasi session fixation.
+20. **Adaptive rate limiting** — rate diturunkan otomatis saat target melambat/error (hingga 1/5 rate awal) dan dipulihkan saat sehat (maksimum 2x rate awal), berbasis baseline latensi bergerak (EWMA).
+21. **Smart crawling** — deteksi pola pagination numerik umum (`?page=`, `?offset=`, `?start=`, `?skip=`, dst) untuk mengantre halaman berikutnya (dibatasi 5 URL per halaman), plus suppression konten duplikat berbasis hash respons (sha256).
+22. **Resume capability** — state scan (URL dikunjungi + hash konten) disimpan ke file JSON secara atomik dan dimuat ulang, sehingga scan panjang bisa di-pause dan dilanjutkan tanpa mengulang crawl.
 
 Setiap fitur sudah diuji production-ready: boolean-blind dan time-based SQLi divalidasi hingga terbukti saling tidak kontaminasi silang, konfirmasi XSS divalidasi dengan Chrome sungguhan hingga benar-benar mengeksekusi script yang disuntik, deteksi pustaka JS diuji dengan 11 skenario, resolver OpenAPI diuji dengan dokumen yang memakai `$ref` bersarang di dalam `allOf`, dan fitur API security baru divalidasi dengan skenario real-world (mass assignment detection tested dengan 23 protected fields, rate limiting dengan concurrent burst testing, API versioning dengan multi-version detection logic).
 
@@ -375,15 +441,9 @@ Arah perluasan yang masih masuk akal untuk meningkatkan kemampuan SSGhost666:
 
 - **Machine learning untuk false positive reduction** — model ML yang belajar dari historical scan results untuk membedakan true positive vs false positive berdasarkan response patterns, mengurangi manual verification.
 
-- **Mutasi payload otomatis** — jika payload ditolak WAF/filter, generator otomatis mencoba encoding alternatif (hex, unicode, double encoding, case variation) dan teknik obfuscation untuk bypass.
-
 #### Authentication & Authorization
 
-- **JWT fuzzing lanjutan** — selain `alg: none`, coba weak signing keys (brute-force HS256 secret), algorithm confusion (RS256→HS256), claim manipulation, dan token expiration abuse.
-
-- **OAuth/OIDC flow testing** — deteksi authorization code interception, redirect_uri validation bypass, PKCE missing, state parameter abuse, dan token leakage.
-
-- **Session management testing** — predictable session ID, session fixation, concurrent session limits, session timeout yang terlalu panjang, dan cookie scope issues.
+- **SSO/OAuth provider abuse lanjutan** — eksploitasi lebih dalam pada implementasi provider (SAML signature wrapping, JWT yang ditandatangani ulang oleh provider pihak ketiga, dsb).
 
 #### Infrastructure & DevOps
 
@@ -402,14 +462,6 @@ Arah perluasan yang masih masuk akal untuk meningkatkan kemampuan SSGhost666:
 - **Slack/Discord/Telegram notification** — kirim alert real-time saat menemukan critical/high findings, dengan summary singkat dan link ke full report.
 
 - **Collaborative scanning** — multiple scanner instances bisa koordinasi lewat shared queue (Redis/RabbitMQ) untuk scan target besar secara distributed, dengan deduplication otomatis.
-
-#### Performance & Scalability
-
-- **Adaptive rate limiting** — otomatis turunkan rate jika detect response time naik (server under load) atau error rate meningkat, lalu naikkan lagi saat kondisi normal.
-
-- **Smart crawling** — deteksi pagination pattern otomatis (`?page=`, `?offset=`), infinite scroll via JavaScript, dan skip duplicate content (same response hash) untuk efisiensi.
-
-- **Resume capability** — simpan state scan ke file sehingga bisa di-pause dan di-resume nanti, berguna untuk scan jangka panjang atau connection interrupted.
 
 ### Kontribusi yang Diharapkan
 

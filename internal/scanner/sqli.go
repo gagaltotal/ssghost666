@@ -30,7 +30,11 @@ import (
 //     finding.
 //
 // All three are read-only probes; nothing here attempts to modify data.
-func CheckSQLi(ctx context.Context, lim *ratelimiter.Limiter, cli *httpclient.Client, baseline *httpclient.Exchange, t model.Target, p model.Param) []model.Finding {
+//
+// mutate enables automatic payload mutation (see payload_mutation.go): if a
+// probe comes back looking WAF/filter-blocked, equivalent encoded/obfuscated
+// variants are retried before the probe is given up on.
+func CheckSQLi(ctx context.Context, lim *ratelimiter.Limiter, cli *httpclient.Client, baseline *httpclient.Exchange, t model.Target, p model.Param, mutate bool) []model.Finding {
 	var findings []model.Finding
 	baselineErr := ""
 	if baseline != nil {
@@ -38,20 +42,26 @@ func CheckSQLi(ctx context.Context, lim *ratelimiter.Limiter, cli *httpclient.Cl
 	}
 
 	for _, payload := range sqliErrorPayloads {
-		ex := sendWithPayload(ctx, lim, cli, t, p.Name, payload)
+		ex, used, attempts := sendAdaptivePayload(mutate, payload, func(pl string) *httpclient.Exchange {
+			return sendWithPayload(ctx, lim, cli, t, p.Name, pl)
+		})
 		if ex.Err != nil || ex.Response == nil {
 			continue
 		}
 		if sig := matchSQLError(ex.Body); sig != "" && sig != baselineErr {
+			notes := "Matched error signature: " + sig
+			if n := mutationNote(attempts); n != "" {
+				notes += " | " + n + " Payload that got through: " + used
+			}
 			findings = append(findings, model.Finding{
 				Category:    "SQL Injection",
 				Severity:    model.SeverityHigh,
 				Title:       "Possible error-based SQL injection in parameter \"" + p.Name + "\"",
-				Description: fmt.Sprintf("Sending %q caused a database error message to appear in the response (matched signature: %q). This suggests user input is concatenated into a SQL query without proper parameterization/escaping.", payload, sig),
+				Description: fmt.Sprintf("Sending %q caused a database error message to appear in the response (matched signature: %q). This suggests user input is concatenated into a SQL query without proper parameterization/escaping.", used, sig),
 				URL:         t.URL,
 				Method:      t.Method,
 				Parameter:   p.Name,
-				Evidence:    model.Evidence{RequestRaw: ex.RequestRaw, ResponseRaw: ex.ResponseRaw, Notes: "Matched error signature: " + sig},
+				Evidence:    model.Evidence{RequestRaw: ex.RequestRaw, ResponseRaw: ex.ResponseRaw, Notes: notes},
 				Remediation: "Use parameterized queries / prepared statements (or a vetted ORM) instead of building SQL by string concatenation, and disable verbose database error output in production.",
 			})
 			return findings // one confirmed error-based hit is enough for this param
