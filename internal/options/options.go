@@ -11,7 +11,7 @@ import (
 )
 
 // Version is the tool version, set at build time via -ldflags if desired.
-var Version = "0.1.2"
+var Version = "0.2.0"
 
 // headerList implements flag.Value so -header can be passed multiple times.
 type headerList []string
