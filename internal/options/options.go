@@ -67,6 +67,7 @@ type Config struct {
 	EnableOOBListener      bool
 
 	OutReport string
+	OutFormat string // "auto" (by extension), "html", "json", "csv" or "sarif"
 	NoColor   bool
 	NoRedact  bool
 	Verbose   bool
@@ -107,7 +108,7 @@ func Parse(args []string) *Config {
 	fs.StringVar(&cfg.Wordlist, "wordlist", "", "Path to a custom wordlist for hidden file/endpoint discovery (one path per line). Defaults to a small built-in list")
 	fs.BoolVar(&cfg.NoDiscover, "no-discover", false, "Disable wordlist-based hidden endpoint discovery")
 
-	fs.StringVar(&cfg.Checks, "checks", "all", "Comma-separated active checks to run: sqli,xss,cmdi,ssrf,ssrfadvanced,auth,passive,ssti,xxe,deser,graphql,websocket,blindxss,protopollution,massassignment,ratelimiting,apiversioning,jwt,oauth,session,all")
+	fs.StringVar(&cfg.Checks, "checks", "all", "Comma-separated active checks to run: sqli,xss,cmdi,ssrf,ssrfadvanced,auth,passive,ssti,xxe,deser,graphql,websocket,blindxss,protopollution,massassignment,ratelimiting,apiversioning,jwt,oauth,session,sso,cloud,subdomain,tls,all")
 	fs.StringVar(&cfg.Exclude, "exclude", "", "Regex of URLs to exclude from crawling/testing (e.g. logout endpoints)")
 	fs.StringVar(&cfg.Scope, "scope", "", "Regex restricting crawl to in-scope URLs. Defaults to same host as -url")
 	fs.StringVar(&cfg.JSLibsDB, "jslibs-db", "", "Path to directory containing external JS library vulnerability database JSON files")
@@ -122,9 +123,10 @@ func Parse(args []string) *Config {
 	fs.BoolVar(&cfg.EnableBlindXSSListener, "blind-xss-listener", true, "Enable the local blind/stored-XSS callback listener that detects delayed beacon execution (enabled by default)")
 	fs.BoolVar(&cfg.EnableOOBListener, "oob-listener", true, "Enable the local out-of-band callback listener used to confirm blind XXE and other server-side injections (enabled by default)")
 
-	fs.StringVar(&cfg.OutReport, "out", "", "Path to write an HTML report with request/response evidence (e.g. report.html)")
+	fs.StringVar(&cfg.OutReport, "out", "", "Path to write the report with request/response evidence (e.g. report.html, report.json, report.sarif)")
+	fs.StringVar(&cfg.OutFormat, "out-format", "auto", "Report format for -out: auto (inferred from the file extension), html, json, csv or sarif (SARIF 2.1.0 for GitHub code scanning / DefectDojo / SIEM ingestion)")
 	fs.BoolVar(&cfg.NoColor, "no-color", false, "Disable ANSI colour in terminal output")
-	fs.BoolVar(&cfg.NoRedact, "no-redact", false, "Do not redact Authorization/Cookie values in the saved HTML report")
+	fs.BoolVar(&cfg.NoRedact, "no-redact", false, "Do not redact Authorization/Cookie values in the saved report")
 	fs.BoolVar(&cfg.Verbose, "v", false, "Verbose progress output")
 
 	fs.BoolVar(&cfg.ShowVersion, "version", false, "Print version and exit")

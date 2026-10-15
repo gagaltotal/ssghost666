@@ -292,6 +292,7 @@ func main() {
 		MutatePayload:  cfg.MutatePayload,
 		BearerToken:    cfg.Bearer,
 		ChromePath:     cfg.ChromePath,
+		TLSVerify:      !cfg.Insecure,
 		OnFinding:      func(f model.Finding) { term.FindingLive(f) },
 		OnProgress: func(s string) {
 			if cfg.Verbose {
@@ -305,26 +306,33 @@ func main() {
 	term.Summary(findings, cres.VisitedCount, int(lim.Count()))
 
 	if cfg.OutReport != "" {
-		err := report.WriteFile(findings, report.Meta{
+		outFormat, err := report.NormalizeFormat(cfg.OutFormat, cfg.OutReport)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		err = report.WriteFormatted(findings, report.Meta{
 			Target:        cfg.TargetURL,
 			Duration:      time.Since(start),
 			VisitedPages:  cres.VisitedCount,
 			TotalRequests: int(lim.Count()),
 			ChecksRun:     checksLabel(checks),
 			Redact:        !cfg.NoRedact,
-		}, cfg.OutReport)
+			ToolVersion:   options.Version,
+		}, cfg.OutReport, outFormat)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error writing report:", err)
 			os.Exit(1)
 		}
-		fmt.Fprintf(os.Stderr, "\nHTML report written to %s\n", cfg.OutReport)
+		fmt.Fprintf(os.Stderr, "\n%s report written to %s\n", strings.ToUpper(outFormat), cfg.OutReport)
 	}
 }
 
 func checksLabel(e scanner.Enabled) string {
 	if e.SQLi && e.XSS && e.CmdI && e.SSRF && e.Auth && e.Passive &&
 		e.SSTI && e.XXE && e.Deser && e.GraphQL && e.WebSocket && e.BlindXSS &&
-		e.JWT && e.OAuth && e.Session {
+		e.JWT && e.OAuth && e.Session &&
+		e.SSO && e.Cloud && e.Subdomain && e.TLS {
 		return "all"
 	}
 	var on []string
@@ -333,6 +341,7 @@ func checksLabel(e scanner.Enabled) string {
 		"auth": e.Auth, "passive": e.Passive, "ssti": e.SSTI, "xxe": e.XXE,
 		"deser": e.Deser, "graphql": e.GraphQL, "websocket": e.WebSocket,
 		"blindxss": e.BlindXSS, "jwt": e.JWT, "oauth": e.OAuth, "session": e.Session,
+		"sso": e.SSO, "cloud": e.Cloud, "subdomain": e.Subdomain, "tls": e.TLS,
 	} {
 		if v {
 			on = append(on, name)

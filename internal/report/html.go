@@ -31,7 +31,8 @@ type Meta struct {
 	VisitedPages  int
 	TotalRequests int
 	ChecksRun     string
-	Redact        bool // redact Authorization/Cookie values in evidence (default true from main.go unless -no-redact)
+	Redact        bool   // redact Authorization/Cookie values in evidence (default true from main.go unless -no-redact)
+	ToolVersion   string // emitted by the JSON/SARIF exporters as tool.version
 }
 
 type severityCount struct {

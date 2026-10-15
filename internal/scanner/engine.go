@@ -22,6 +22,7 @@ type Enabled struct {
 	MassAssignment, RateLimiting         bool
 	APIVersioning                        bool
 	JWT, OAuth, Session                  bool
+	SSO, Cloud, Subdomain, TLS           bool
 }
 
 // ParseChecks turns "all" or a comma list like "sqli,xss,passive" into an
@@ -35,6 +36,7 @@ func ParseChecks(spec string) Enabled {
 			SSRFAdvanced: true, PrototypePollution: true, MassAssignment: true,
 			RateLimiting: true, APIVersioning: true,
 			JWT: true, OAuth: true, Session: true,
+			SSO: true, Cloud: true, Subdomain: true, TLS: true,
 		}
 	}
 	var e Enabled
@@ -80,6 +82,14 @@ func ParseChecks(spec string) Enabled {
 			e.OAuth = true
 		case "session", "sessionmgmt", "session-management":
 			e.Session = true
+		case "sso", "saml", "sso-abuse", "provider-abuse":
+			e.SSO = true
+		case "cloud", "misconfig", "cloud-misconfig", "cloudmisconfig":
+			e.Cloud = true
+		case "subdomain", "takeover", "subdomain-takeover", "subdomaintakeover":
+			e.Subdomain = true
+		case "tls", "ssl", "ssltls", "tls-ssl":
+			e.TLS = true
 		}
 	}
 	return e
@@ -98,6 +108,7 @@ type Options struct {
 	MutatePayload  bool                // true to auto-encode/obfuscate payloads when a WAF/filter blocks them
 	BearerToken    string              // the -bearer value, for active JWT fuzzing
 	ChromePath     string              // optional explicit Chrome/Chromium binary path
+	TLSVerify      bool                // true unless -insecure was set: report TLS trust-chain problems
 	OnFinding      func(model.Finding) // progress callback, called as each finding is confirmed
 	OnProgress     func(string)
 }
@@ -301,6 +312,24 @@ func Run(ctx context.Context, cli *httpclient.Client, lim *ratelimiter.Limiter, 
 	}
 	if opt.Checks.Session {
 		add(CheckSessionManagement(ctx, lim, cli, captured, targets))
+	}
+
+	// SSO/OAuth provider abuse, cloud misconfiguration, subdomain takeover
+	// and TLS/SSL configuration are all per-service (or per-host) rather
+	// than per-parameter, so they run once here. SSO abuse reuses the
+	// bearer token when one is available, since a signed JWT is the
+	// cheapest way to reach a protected SAML ACS or JWKS endpoint.
+	if opt.Checks.SSO {
+		add(CheckSSOAbuse(ctx, lim, cli, targets, opt.BearerToken))
+	}
+	if opt.Checks.Cloud {
+		add(RunCloudMisconfigChecks(ctx, lim, cli, targets))
+	}
+	if opt.Checks.Subdomain {
+		add(RunSubdomainTakeoverChecks(ctx, lim, cli, targets))
+	}
+	if opt.Checks.TLS {
+		add(RunTLSChecks(ctx, lim, cli, targets, opt.TLSVerify))
 	}
 
 	// Final blind-XSS sweep: any callback that arrived after its own

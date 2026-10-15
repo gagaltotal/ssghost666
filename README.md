@@ -6,9 +6,11 @@ miliki atau telah mendapat izin eksplisit untuk diuji: menemukan
 halaman/endpoint, meng-crawl rute yang dimuat JavaScript, mengimpor
 definisi API, lalu menjalankan pemeriksaan terarah untuk SQL injection,
 XSS (termasuk blind/stored), command injection, SSRF, SSTI, XXE, insecure
-deserialization, GraphQL, WebSocket, JWT/OAuth/session, masalah autentikasi,
-dan beberapa pemeriksaan pasif — dengan setiap temuan membawa bukti
-request/response mentah.
+deserialization, GraphQL, WebSocket, JWT/OAuth/session, SSO/SAML provider
+abuse, cloud misconfiguration, subdomain takeover, SSL/TLS configuration,
+masalah autentikasi, dan beberapa pemeriksaan pasif — dengan setiap temuan
+membawa bukti request/response mentah. Hasil pemindaian bisa diekspor ke
+HTML, JSON, CSV, atau SARIF.
 
 > **Hanya pindai aplikasi yang Anda miliki atau yang secara eksplisit
 > mengizinkan Anda mengujinya.** Alat ini mencetak pengingat ini setiap
@@ -54,6 +56,11 @@ request/response mentah.
 - **Adaptive rate limiting** (`-adaptive-rate`, aktif default): limiter mengamati latensi, status, dan error tiap request dengan baseline bergerak (EWMA), lalu menurunkan rate saat target melambat atau mulai membalas error/429/5xx (hingga 1/5 rate awal) dan menaikkannya kembali saat respons sehat lagi (maksimum 2x rate awal). Nonaktifkan dengan `-adaptive-rate=false`.
 - **Smart crawling** (`-smart-crawl`, aktif default): mendeteksi pola pagination numerik umum (`?page=`, `?p=`, `?offset=`, `?start=`, `?skip=`, `?from=`, dst) dan otomatis mengantre halaman berikutnya (nilai +1/+2, dibatasi 5 URL per halaman agar tetap terarah, bukan crawl arsip tanpa batas). Digabung dengan **suppression konten duplikat** berbasis hash respons (sha256) — halaman yang isinya identik di banyak URL (SPA shell, pagination yang "menjepit" di halaman terakhir) tidak di-crawl dan tidak dipindai berulang. Nonaktifkan dengan `-smart-crawl=false`.
 - **Resume capability** (`-resume state.json`): status scan (URL yang sudah dikunjungi + hash konten yang sudah dilihat) disimpan ke file JSON dan dimuat ulang saat dijalankan kembali, sehingga scan jangka panjang yang terputus (atau sengaja di-pause dengan Ctrl-C) bisa dilanjutkan tanpa mengulang crawl dari awal. Penulisan bersifat atomik (tulis ke file sementara lalu `rename`), dan state untuk target yang berbeda otomatis diabaikan agar tidak salah melewati halaman.
+- **SSO/OAuth provider abuse lanjutan** (`-checks sso`): melengkapi pengujian OAuth/OIDC dengan sisi **provider**. Menemukan metadata SAML ( `/saml/metadata`, `/sso/metadata`, `/FederationMetadata/...`), ACS endpoint ( `/saml/acs`, `/Shibboleth.sso/SAML2/POST`), dan JWKS/OIDC discovery ( `/.well-known/jwks.json`, `/.well-known/openid-configuration`) dari hasil crawl maupun path konvensional. Lalu menguji **SAML response manipulation**: assertion tanpa signature, assertion dengan signature yang sengaja dirusak, dan assertion `unsigned` dengan `ds:Signature` kosong — masing-masing dibandingkan dengan **kontrol negatif** sehingga hanya server yang benar-benar menerima assertion palsu (tanpa memverifikasi XML signature) yang dilaporkan, dan **RelayState open redirect**. Untuk JWT, ia memeriksa JWKS yang **mempublikasikan kunci `kty: oct`** (secret HMAC yang bocor, sehingga siapa pun bisa menandatangani token yang valid — dilengkapi pembuktian end-to-end dengan token yang benar-benar di-forge), **`kid` header injection** (path traversal `../../../../dev/null` sehingga signature jadi HMAC dari kunci kosong, dan SQL error di nilai `kid`).
+- **Cloud misconfiguration scanner** (`-checks cloud`): satu gerbang untuk kesalahan konfigurasi cloud yang paling sering berbuah kebocoran. (a) **File sensitif yang terpapar** — `/.git/config`, `/.git/HEAD`, `/.env`, `/.aws/credentials`, `/.htpasswd`, `/.DS_Store`, `docker-compose.yml` — tiap-tiap path punya **validator format** sendiri (pola `[core]`/`[remote "..."]`, `ref: refs/heads/`, pasangan `KEY=VALUE` khas `.env`, blok `[default]` AWS, hash bcrypt/apr1, magic bytes `Bud1`), jadi respons HTML catch-all tidak akan pernah lolos. (b) **Layanan admin tanpa autentikasi** — Kubernetes API (`/api/v1/namespaces`, `/version`), Docker API (`/api/version`), Consul (`/v1/agent/self`, `/v1/catalog/services`) — dilaporkan **kritis** hanya jika respons benar-benar parse sebagai JSON dari layanan tersebut. (c) **Swagger/OpenAPI yang terbuka** yang mengungkap peta API internal. (d) **Cloud metadata endpoint (SSRF ke IMDS)** — mencoba `169.254.169.254` (AWS), `metadata.google.internal` + header `Metadata-Flavor: Google` (GCP), Azure IMDS dengan header `Metadata: true`, dan Alibaba — dijalankan per-origin dengan marker khusus masing-masing, sehingga tidak menyalahkan web server biasa sebagai metadata service. (e) **S3 bucket publik** — daftar bucket diekstrak dari markup crawl, lalu hanya yang menghasilkan `ListBucketResult` sah dan **tidak** mengandung hint non-bucket (CloudFront, ELB, execute-api) yang dilaporkan.
+- **Subdomain takeover** (`-checks subdomain`): mengambil setiap hostname yang muncul selama crawl (plus host target itu sendiri), menelusuri rantai **CNAME** dengan resolver stdlib (`net.LookupCNAME`, maksimum 8 hop dan anti-loop), lalu mencocokkan suffix CNAME terhadap **tabel 31 penyedia** (GitHub Pages, Heroku, AWS S3/CloudFront, Azure, Netlify, Vercel, Shopify, Fastly, Zendesk, Tumblr, WordPress.com, Ghost, Surge.sh, Read the Docs, Bitbucket, Pantheon, Statuspage, Unbounce, Freshdesk, Teamwork, Desk.com, SmugMug, Cargo, Kajabi, Agile CRM, Ngrok, Fly.io, Render, GitLab Pages, Firebase, dst). **CNAME dangling saja bukan temuan** — ini yang membedakannya dari scanner yang berisik: setiap kandidat harus benar-benar mengembalikan **halaman error "resource tidak ada" spesifik penyedia** (setiap signature memuat penanda penyedia, sehingga frasa generik seperti "not found" tidak pernah lolos sendiri), dan respons 5xx selalu ditolak karena itu outage, bukan resource menggantung. Pemeriksaannya **read-only** — SSGhost666 tidak pernah mencoba mengklaim atau mendaftarkan resource apa pun; bukti temuan menyebutkan bahwa konfirmasi dilakukan non-destruktif.
+- **SSL/TLS testing** (`-checks tls`): menganalisis transport security tiap endpoint (host:port, dicap 6 endpoint). (a) **Versi protokol lama** — SSLv3, TLS 1.0, TLS 1.1 — dideteksi dengan **ClientHello mentah** yang dibuat sendiri (Go `crypto/tls` menolak SSLv3 dan minimum default-nya TLS 1.2, jadi pertanyaan "apakah server masih menerima TLS 1.0?" tidak bisa dijawab pustaka standar); ServerHello yang menggemakan versi yang ditawarkan membuktikan minimum server memang di bawahnya — TLS 1.0 dilaporkan dengan konteks **BEAST** (CVE-2011-3389), SSLv3 dengan konteks **POODLE** (CVE-2014-3566). (b) **Cipher suite rusak** — tiap keluarga lemah (NULL, EXPORT/40-bit, RC4, single DES, 3DES/**Sweet32**) ditawarkan **sendirian** pada TLS 1.2, jadi handshake yang berhasil adalah bukti suite itu memang masih aktif (bukan sekadar ada di daftar). (c) **Masalah certificate** — kedaluwarsa, belum berlaku, nama host tidak cocok, chain tidak tepercaya/self-signed, signatur **MD5/SHA-1**, dan kunci **RSA < 2048 bit** atau kurva ECDSA < 224 bit — masing-masing dibedakan penyebabnya alih-alih digabung jadi satu error handshake buram, dengan verifikasi trust-chain dihormati oleh `-insecure`. **Heartbleed sengaja tidak diuji**: konfirmasinya butuh mengirim heartbeat cacat dan membocorkan memori target, sedangkan SSGhost666 non-destruktif — keterbatasan ini dinyatakan eksplisit, bukan diabaikan diam-diam.
+- **Export ke format standar** (`-out-format`): selain HTML, laporan bisa ditulis sebagai **JSON** (array temuan lengkap dengan metadata run, `severity_counts`, dan evidence redacted), **CSV** (RFC 4180 dengan header kolom tetap, aman untuk impor massal ke spreadsheet/Jira), atau **SARIF 2.1.0** (schema resmi, satu `rule` per kategori temuan, `level` dipetakan CRITICAL/HIGH→`error`, MEDIUM→`warning`, LOW/INFO→`note`, `partialFingerprints` berisi hash sha256 dari identitas temuan sehingga triage tersimpan antar-run) — format yang langsung dimakan GitHub code scanning, Azure DevOps, DefectDojo, Faraday, dan pipeline SIEM. Gunakan `-out-format auto` (bawaan) agar format ditentukan dari ekstensi file (`.json`, `.csv`, `.sarif`, `.sarif.json`, `.html`), atau paksa dengan `-out-format json|csv|sarif|html`. Redaksi `Authorization`/`Cookie` juga berlaku untuk JSON/CSV/SARIF, jadi format machine-readable tidak lebih bocor daripada HTML.
 
 ## Instalasi
 
@@ -141,11 +148,17 @@ discovery, checks, SSRF callback, dll).
 Nilai yang didukung: `sqli`, `xss`, `cmdi`, `ssrf`, `ssrfadvanced`, `auth`, `passive`,
 `ssti`, `xxe`, `deser`, `graphql`, `websocket`, `blindxss`, `protopollution`,
 `massassignment`, `ratelimiting`, `apiversioning`, `jwt`, `oauth`, `session`,
+`sso`, `cloud`, `subdomain`, `tls`,
 atau `all` (bawaan).
 
 Contoh untuk API security testing:
 ```bash
 ./ssghost666 -url https://api.app.com -checks massassignment,ratelimiting,apiversioning,auth
+```
+
+Contoh untuk pengujian infrastruktur (SSO, cloud, subdomain, TLS):
+```bash
+./ssghost666 -url https://app.anda.com -checks sso,cloud,subdomain,tls
 ```
 
 ### Pengujian SSRF dengan callback OOB
@@ -312,6 +325,54 @@ Menemukan endpoint authorization dari crawl dan path konvensional, lalu menguji 
 
 Menganalisis cookie sesi yang tertangkap: entropi/prediktabilitas session ID, flag `HttpOnly`/`Secure`/`SameSite`, masa berlaku berlebihan, scope cookie yang terlalu luas, dan indikasi session fixation.
 
+#### SSO / SAML Provider Abuse
+
+```bash
+./ssghost666 -url https://app.anda.com -checks sso
+```
+
+Modul ini mencari metadata SAML, ACS endpoint, dan JWKS/OIDC discovery dari hasil crawl maupun path konvensional, lalu menguji apakah server **benar-benar memverifikasi** assertion/`kid` — setiap klaim penerimaan dibandingkan dengan kontrol negatif agar server yang menolak dengan benar tidak dilaporkan.
+
+#### Cloud Misconfiguration
+
+```bash
+./ssghost666 -url https://app.anda.com -checks cloud
+```
+
+Memeriksa file sensitif (`/.git/config`, `/.env`, `/.aws/credentials`, `docker-compose.yml`, dst) dengan validator format per-path, layanan admin tanpa autentikasi (Kubernetes API, Docker API, Consul), Swagger/OpenAPI yang terbuka, cloud metadata endpoint (AWS/GCP/Azure/Alibaba, sebagai bukti SSRF ke IMDS), dan S3 bucket publik dari nama bucket yang ditemukan saat crawl.
+
+#### Subdomain Takeover
+
+```bash
+./ssghost666 -url https://app.anda.com -checks subdomain
+```
+
+Menelusuri CNAME setiap hostname yang ditemukan (maksimum 40 host, 8 hop per rantai) dan mencocokkannya ke tabel 31 penyedia. **CNAME menggantung saja tidak dilaporkan** — temuan hanya dibuat bila halaman error spesifik penyedia benar-benar terlihat. Pemeriksaannya read-only: SSGhost666 tidak pernah mencoba mengklaim resource.
+
+#### SSL/TLS Testing
+
+```bash
+./ssghost666 -url https://app.anda.com -checks tls
+```
+
+Memeriksa versi protokol lama (SSLv3, TLS 1.0, TLS 1.1) dengan ClientHello mentah, cipher suite rusak (NULL, EXPORT, RC4, DES, 3DES) yang ditawarkan satu per satu, serta masalah certificate (kedaluwarsa, nama tidak cocok, chain tidak tepercaya, MD5/SHA-1, kunci lemah). Untuk target dengan certificate self-signed selama pengujian internal, gunakan `-insecure` agar temuan "chain tidak tepercaya" tidak dianggap kebisingan. **Heartbleed tidak diuji** karena konfirmasinya bersifat destruktif.
+
+#### Export ke JSON / CSV / SARIF
+
+```bash
+# Format ditentukan otomatis dari ekstensi file
+./ssghost666 -url https://app.anda.com -out hasil.sarif
+./ssghost666 -url https://app.anda.com -out hasil.json
+./ssghost666 -url https://app.anda.com -out hasil.csv
+
+# Atau paksa formatnya
+./ssghost666 -url https://app.anda.com -out laporan.txt -out-format sarif
+```
+
+- `auto` (bawaan) mengenali `.json`, `.csv`, `.sarif` / `.sarif.json`, dan `.html`; ekstensi tak dikenal jatuh kembali ke HTML.
+- `sarif` menghasilkan SARIF 2.1.0 yang langsung bisa di-upload ke GitHub code scanning, Azure DevOps, DefectDojo, atau Faraday.
+- Redaksi `Authorization`/`Cookie` berlaku juga untuk JSON/CSV/SARIF (matikan dengan `-no-redact`).
+
 #### Adaptive Rate Limiting, Smart Crawling, dan Resume
 
 Ketiganya aktif secara default dan bisa dikombinasikan untuk scan jangka panjang yang sopan terhadap server target:
@@ -347,6 +408,10 @@ internal/scanner             — setiap modul pemeriksaan + engine orkestrasi
   cmdi.go, ssrf.go, auth.go    command injection, SSRF, CORS/broken-access/JWT
   jwt_fuzz.go                  weak HS256 secret, alg confusion, klaim/exp abuse
   oauth.go                     OAuth/OIDC redirect_uri bypass, PKCE, state
+  sso_abuse.go                 SAML/JWKS provider abuse (unsigned assertion, kid injection)
+  cloud_misconfig.go           file sensitif, K8s/Docker/Consul, IMDS, S3 bucket publik
+  subdomain.go                 dangling CNAME + verifikasi halaman error penyedia
+  tls.go                       versi protokol lama, cipher lemah, certificate (ClientHello mentah)
   session.go                   session ID/flag/lifetime/scope + fixation
   payload_mutation.go          deteksi WAF + mutasi payload (encoding/obfuscation)
   ssti.go                      template injection (aritmatika + fingerprint engine)
@@ -357,7 +422,7 @@ internal/scanner             — setiap modul pemeriksaan + engine orkestrasi
   blindxss.go                  blind/stored XSS + listener callback beacon
   request_extra.go             helper request raw body (XML/JSON/serialized)
   passive.go + jslibs.go       header/error/listing pasif + versi pustaka JS rentan
-internal/report               — output terminal & laporan HTML
+internal/report               — output terminal, laporan HTML, dan exporter JSON/CSV/SARIF (export.go)
 ```
 
 Setiap pemeriksaan aktif (`sqli.go`, `xss.go`, `cmdi.go`, `ssrf.go`,
@@ -395,6 +460,22 @@ sama.
   CVE yang sudah dikenal luas dan diverifikasi saat alat ini ditulis,
   bukan feed yang selalu ter-update. Perlakukan sebagai titik awal
   pemeriksaan, bukan daftar lengkap.
+- **Cloud misconfig, subdomain takeover, dan TLS bersifat "bukti, bukan klaim".**
+  Pemeriksaan cloud hanya melaporkan file/layanan yang **responsnya lolos
+  validator format** (jadi halaman catch-all tidak membanjiri hasil), subdomain
+  takeover hanya dilaporkan bila **halaman error spesifik penyedia** benar-benar
+  terlihat (CNAME menggantung saja tidak cukup), dan pemeriksaan TLS memakai
+  handshake mentah sehingga hasilnya adalah apa yang benar-benar dinegosiasikan
+  server. **Heartbleed tidak diuji** karena konfirmasinya butuh mengirim
+  heartbeat cacat dan membaca memori target — SSGhost666 tidak melakukan itu.
+  Subdomain takeover juga **read-only**: alat tidak pernah mengklaim resource,
+  jadi temuan berarti "nama ini bisa diklaim", bukan "nama ini sudah diklaim".
+- **Pemeriksaan TLS dan subdomain bekerja di level jaringan**, bukan lewat
+  proxy HTTP. Jika Anda merutekan trafik lewat `-proxy`, probe TLS/ClientHello
+  dan resolusi DNS tetap keluar langsung dari mesin Anda.
+- **Cloud metadata endpoint diuji per-origin** dan hanya dianggap temuan bila
+  respons punya penanda khas layanan tersebut (AWS/GCP/Azure/Alibaba). Web
+  server biasa yang kebetulan membalas `169.254.169.254` tidak akan dilaporkan.
 - Brute-force discovery memakai wordlist bawaan yang sengaja kecil.
   Untuk cakupan lebih luas, arahkan `-wordlist` ke daftar yang lebih
   besar (mis. dari SecLists).
@@ -426,14 +507,17 @@ Fitur-fitur berikut yang sebelumnya direncanakan **sudah selesai diimplementasik
 20. **Adaptive rate limiting** — rate diturunkan otomatis saat target melambat/error (hingga 1/5 rate awal) dan dipulihkan saat sehat (maksimum 2x rate awal), berbasis baseline latensi bergerak (EWMA).
 21. **Smart crawling** — deteksi pola pagination numerik umum (`?page=`, `?offset=`, `?start=`, `?skip=`, dst) untuk mengantre halaman berikutnya (dibatasi 5 URL per halaman), plus suppression konten duplikat berbasis hash respons (sha256).
 22. **Resume capability** — state scan (URL dikunjungi + hash konten) disimpan ke file JSON secara atomik dan dimuat ulang, sehingga scan panjang bisa di-pause dan dilanjutkan tanpa mengulang crawl.
+23. **SSO/OAuth provider abuse lanjutan** — deteksi metadata SAML / ACS / JWKS / OIDC discovery, pengujian SAML response manipulation (unsigned, signature dirusak, `ds:Signature` kosong) dengan kontrol negatif, RelayState open redirect, JWKS yang membocorkan `kty: oct`, dan `kid` header injection (path traversal + SQL error).
+24. **Cloud misconfiguration scanner** — file sensitif dengan validator format per-path, layanan admin tanpa autentikasi (Kubernetes API, Docker API, Consul), Swagger/OpenAPI terbuka, cloud metadata endpoint (AWS/GCP/Azure/Alibaba), dan S3 bucket publik.
+25. **Subdomain takeover** — penelusuran rantai CNAME (anti-loop, 8 hop) terhadap tabel 31 penyedia, dengan verifikasi halaman error spesifik penyedia sehingga CNAME menggantung saja tidak dilaporkan. Read-only: tidak pernah mencoba mengklaim resource.
+26. **SSL/TLS testing** — deteksi SSLv3/TLS 1.0/1.1 lewat ClientHello mentah, enumerasi cipher suite lemah (NULL/EXPORT/RC4/DES/3DES) satu per satu, dan analisis certificate (kedaluwarsa, nama tidak cocok, chain tidak tepercaya, MD5/SHA-1, kunci lemah). Heartbleed sengaja tidak diuji karena konfirmasinya destruktif.
+27. **Export ke format standar** — exporter JSON, CSV (RFC 4180), dan SARIF 2.1.0 dengan pemetaan severity→level, fingerprint per temuan, dan deteksi format otomatis dari ekstensi `-out`.
 
-Setiap fitur sudah diuji production-ready: boolean-blind dan time-based SQLi divalidasi hingga terbukti saling tidak kontaminasi silang, konfirmasi XSS divalidasi dengan Chrome sungguhan hingga benar-benar mengeksekusi script yang disuntik, deteksi pustaka JS diuji dengan 11 skenario, resolver OpenAPI diuji dengan dokumen yang memakai `$ref` bersarang di dalam `allOf`, dan fitur API security baru divalidasi dengan skenario real-world (mass assignment detection tested dengan 23 protected fields, rate limiting dengan concurrent burst testing, API versioning dengan multi-version detection logic).
+Setiap fitur sudah diuji production-ready: boolean-blind dan time-based SQLi divalidasi hingga terbukti saling tidak kontaminasi silang, konfirmasi XSS divalidasi dengan Chrome sungguhan hingga benar-benar mengeksekusi script yang disuntik, deteksi pustaka JS diuji dengan 11 skenario, resolver OpenAPI diuji dengan dokumen yang memakai `$ref` bersarang di dalam `allOf`, dan fitur API security baru divalidasi dengan skenario real-world (mass assignment detection tested dengan 23 protected fields, rate limiting dengan concurrent burst testing, API versioning dengan multi-version detection logic). Exporter output juga divalidasi struktural: JSON/CSV di-parse ulang dan SARIF 2.1.0 dicek memiliki `$schema`, `version`, `tool.driver`, `invocations`, `rules`, serta `partialFingerprints` yang konsisten antar-run.
 
 ### Roadmap Pengembangan Selanjutnya
 
 Arah perluasan yang masih masuk akal untuk meningkatkan kemampuan SSGhost666:
-
-#### Deteksi & Eksploitasi Lanjutan
 
 #### Smart Fuzzing & AI
 
@@ -441,23 +525,9 @@ Arah perluasan yang masih masuk akal untuk meningkatkan kemampuan SSGhost666:
 
 - **Machine learning untuk false positive reduction** — model ML yang belajar dari historical scan results untuk membedakan true positive vs false positive berdasarkan response patterns, mengurangi manual verification.
 
-#### Authentication & Authorization
-
-- **SSO/OAuth provider abuse lanjutan** — eksploitasi lebih dalam pada implementasi provider (SAML signature wrapping, JWT yang ditandatangani ulang oleh provider pihak ketiga, dsb).
-
-#### Infrastructure & DevOps
-
-- **Cloud misconfiguration scanner** — deteksi S3 bucket public, exposed `.git`/`.env`/`.aws` directories, Kubernetes dashboard tanpa auth, Docker API exposed, dan cloud metadata endpoints.
-
-- **Subdomain takeover** — crawl subdomain via DNS, cek CNAME pointing ke layanan yang sudah di-deprovision (GitHub Pages, Heroku, AWS S3, Azure, dll), lalu verifikasi apakah bisa di-claim.
-
-- **SSL/TLS testing** — analisis cipher suite weak, protocol version lama (SSLv3, TLS 1.0), certificate validation issues, dan Heartbleed/POODLE/BEAST vulnerability.
-
 #### Reporting & Integration
 
 - **Diff mode untuk CI/CD** — bandingkan hasil scan dengan baseline sebelumnya, laporkan hanya temuan baru untuk integrasi dengan pipeline CI/CD tanpa noise.
-
-- **Export ke format standar** — selain HTML, support JSON/CSV/SARIF untuk integrasi dengan SIEM, bug tracking (Jira, GitHub Issues), atau security platform (DefectDojo, Faraday).
 
 - **Slack/Discord/Telegram notification** — kirim alert real-time saat menemukan critical/high findings, dengan summary singkat dan link ke full report.
 
