@@ -21,6 +21,7 @@ type Enabled struct {
 	SSRFAdvanced, PrototypePollution     bool
 	MassAssignment, RateLimiting         bool
 	APIVersioning                        bool
+	ContextAware                         bool
 	JWT, OAuth, Session                  bool
 	SSO, Cloud, Subdomain, TLS           bool
 }
@@ -35,7 +36,8 @@ func ParseChecks(spec string) Enabled {
 			SSTI: true, XXE: true, Deser: true, GraphQL: true, WebSocket: true, BlindXSS: true,
 			SSRFAdvanced: true, PrototypePollution: true, MassAssignment: true,
 			RateLimiting: true, APIVersioning: true,
-			JWT: true, OAuth: true, Session: true,
+			ContextAware: true,
+			JWT:          true, OAuth: true, Session: true,
 			SSO: true, Cloud: true, Subdomain: true, TLS: true,
 		}
 	}
@@ -76,6 +78,8 @@ func ParseChecks(spec string) Enabled {
 			e.RateLimiting = true
 		case "apiversioning", "api-versioning", "versioning":
 			e.APIVersioning = true
+		case "contextaware", "context-aware", "context":
+			e.ContextAware = true
 		case "jwt", "jwtfuzz", "jwt-fuzz", "jwt-fuzzing":
 			e.JWT = true
 		case "oauth", "oidc", "oauth2":
@@ -106,6 +110,7 @@ type Options struct {
 	BrowserConfirm bool                // true if -js-render was set: attempt real-browser XSS execution confirmation
 	DOMXSSCheck    bool                // true to enable DOM-based XSS detection
 	MutatePayload  bool                // true to auto-encode/obfuscate payloads when a WAF/filter blocks them
+	ContextAware   bool                // true to pick payloads by inferred parameter context (file/id/email/redirect)
 	BearerToken    string              // the -bearer value, for active JWT fuzzing
 	ChromePath     string              // optional explicit Chrome/Chromium binary path
 	TLSVerify      bool                // true unless -insecure was set: report TLS trust-chain problems
@@ -262,6 +267,13 @@ func Run(ctx context.Context, cli *httpclient.Client, lim *ratelimiter.Limiter, 
 						bxssCorrelations[marker] = c
 						bxssMu.Unlock()
 					}))
+				}()
+			}
+			if opt.Checks.ContextAware {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					add(CheckContextAwareFuzzing(ctx, lim, cli, baseline, t, p, opt.MutatePayload))
 				}()
 			}
 		}

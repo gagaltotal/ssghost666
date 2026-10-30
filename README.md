@@ -50,6 +50,13 @@ HTML, JSON, CSV, atau SARIF.
 - **Laporan HTML** (`-out report.html`) mandiri (tanpa dependensi eksternal) berisi bukti request/response lengkap per temuan, dengan auto-escaping yang benar (payload yang direfleksikan tidak akan "hidup" sebagai HTML di laporan) dan redaksi otomatis header `Authorization`/`Cookie` (nonaktifkan dengan `-no-redact`).
 - **Rate limiting & concurrency yang sopan secara default** (`-rate`, `-concurrency`, `-max-requests`) — setiap request HTTP sungguhan melewati limiter yang sama, bukan hanya longgar per "tugas".
 - **Mutasi payload otomatis (bypass WAF/filter)** (`-mutate-payload`, aktif default): saat sebuah payload ditolak WAF/filter — terdeteksi dari status blok (403/406/419/429/501/999) atau signature WAF yang dikenal (Cloudflare, AWS WAF, ModSecurity, Sucuri, Imperva, Akamai, F5, Barracuda, Wordfence) di header maupun body — SSGhost666 otomatis mengirim ulang payload yang sama dalam beberapa varian encoding/obfuscation (case variation, SQL comment whitespace `UNION/**/SELECT`, full URL-encoding, double URL-encoding, HTML hex entities, unicode escapes) dan memakai varian pertama yang lolos untuk logika deteksinya. Setiap temuan mencatat varian mana saja yang dicoba. Nonaktifkan dengan `-mutate-payload=false`.
+- **Context-aware fuzzing** (`-context-aware`, aktif default): setiap modul pemeriksaan lain memakai satu set payload yang buta terhadap arti parameter — parameter `email` dan `file` sama-sama diberi probe XSS/SQLi yang sama. Lapisan ini membaca **nama** (dan bila perlu **nilai** baseline) tiap parameter, menyimpulkan jenis input yang paling masuk akal, lalu hanya mengirim probe yang relevan untuk jenis itu:
+  - `file`/`path`/`download`/`image`/`attachment`/… → **path traversal** (`../../../../etc/passwd`, varian URL-encoded, `....//`, backslash Windows), dikonfirmasi dengan mencocokkan **isi file sistem nyata** — bukan sekadar pantulan payload.
+  - `id`/`user_id`/`order_no`/… (nilai baseline numerik) → **IDOR / object enumeration** terhadap id tetangga, dengan **kontrol negatif** (id yang sengaja tidak ada) sehingga endpoint catch-all tidak pernah menghasilkan false positive.
+  - `email`/`mail`/`recipient`/… → **email/header (CRLF) injection** (`Cc:`/`Bcc:` yang disuntikkan), dikonfirmasi lewat error mail-handling yang **tidak** muncul pada baseline maupun alamat kontrol yang sehat.
+  - `redirect`/`next`/`return`/`url`/… → **open redirect** memakai host canary unik (diperiksa di header `Location` maupun `meta-refresh` HTML).
+
+  Modul ini **tidak** menggantikan mesin XSS/SQLi/SSRF yang sudah ada — ia hanya menambah probe khas konteks yang sebelumnya tidak pernah dikirim, sehingga **memperluas cakupan sekaligus menekan noise** (parameter `email` tidak lagi dibanjiri payload URL yang tidak mungkin dievaluasi). Non-destruktif: hanya berjalan pada target **GET/HEAD**, sehingga target `PUT`/`PATCH`/`DELETE` tidak pernah disentuh. Nonaktifkan dengan `-context-aware=false`.
 - **JWT fuzzing lanjutan** (`-checks jwt`, memakai `-bearer`): selain deteksi `alg: none`, modul ini membongkar token untuk **brute-force weak HS256 secret** (~130 secret bocor/umum seperti `secret`, `changeme`, `jwt-secret`, kunci contoh dari dokumentasi), **algorithm confusion RS256→HS256** (mengambil public key dari JWKS endpoint `/.well-known/jwks.json` atau OIDC discovery, lalu menandatangani token palsu dengan kunci publik sebagai HMAC secret), **klaim escalation** (`role`/`admin`/`isAdmin` dinaikkan, `sub`/`user` diubah) dan **ekspirasi** (`exp` dihilangkan, `iss`/`aud` dikosongkan). Token forged hanya dianggap berhasil setelah **kontrol negatif** (token sengaja rusak) ditolak target — jadi server yang menerima semua token tidak menghasilkan false positive.
 - **OAuth / OIDC flow testing** (`-checks oauth`): menemukan endpoint authorization (dari crawl maupun path konvensional `/oauth/authorize`, `/auth`, `/login`, dst), lalu menguji **redirect_uri validation bypass** dengan 10 varian (suffix/prefix abuse, `@`-trick, subdomain, open redirect bertingkat, path traversal, dan lainnya), **PKCE missing** (tidak ada `code_challenge`), **state parameter abuse** (state hilang atau bisa diprediksi), dan **token/code leakage** lewat `Location` header atau `Referer`.
 - **Session management testing** (`-checks session`): menganalisis cookie sesi yang tertangkap dan melaporkan **session ID yang lemah** (entropi Shannon rendah, nilai sekuensial/prediktabel, nilai bernama `JSESSIONID=1001` dsb), **flag keamanan cookie** yang hilang (`HttpOnly`/`Secure`/`SameSite`), **masa berlaku berlebihan** (`Max-Age`/`Expires` terlalu panjang), **scope cookie** yang terlalu luas (`Domain`/`Path`), dan indikasi **session fixation** (nilai sesi tidak berubah setelah request ber-kredensial).
@@ -147,7 +154,7 @@ discovery, checks, SSRF callback, dll).
 
 Nilai yang didukung: `sqli`, `xss`, `cmdi`, `ssrf`, `ssrfadvanced`, `auth`, `passive`,
 `ssti`, `xxe`, `deser`, `graphql`, `websocket`, `blindxss`, `protopollution`,
-`massassignment`, `ratelimiting`, `apiversioning`, `jwt`, `oauth`, `session`,
+`massassignment`, `ratelimiting`, `apiversioning`, `contextaware`, `jwt`, `oauth`, `session`,
 `sso`, `cloud`, `subdomain`, `tls`,
 atau `all` (bawaan).
 
@@ -297,6 +304,30 @@ Format file JSON:
 }
 ```
 
+#### Context-Aware Fuzzing
+
+Secara default SSGhost666 menganalisis nama (dan nilai) setiap parameter, lalu
+memilih payload sesuai konteksnya — parameter `file` mendapatkan probe path
+traversal, `id` numerik mendapatkan uji IDOR, `email` mendapatkan uji header
+injection, dan `redirect`/`url` mendapatkan uji open redirect. Aktif secara default;
+matikan bila tidak diinginkan:
+
+```bash
+./ssghost666 -url https://app.anda.com -context-aware
+
+# Atau jalankan hanya pemeriksaan ini
+./ssghost666 -url https://app.anda.com -checks contextaware
+
+# Nonaktifkan sepenuhnya
+./ssghost666 -url https://app.anda.com -context-aware=false
+```
+
+Karena ini adalah lapisan *enrichment*, probe konteks hanya dijalankan pada target
+**GET/HEAD** (target yang mengubah data tidak pernah disentuh), dan setiap
+konfirmasi memakai kontrol negatif sehingga halaman catch-all, endpoint yang
+sekadar meng-echo input, atau respons yang sedikit bervariasi antar-request tidak
+dilaporkan.
+
 #### JWT Fuzzing Lanjutan
 
 Berikan token Bearer dan aktifkan pemeriksaan `jwt` untuk menguji weak secret, algorithm confusion, dan klaim yang bisa dimanipulasi:
@@ -414,6 +445,7 @@ internal/scanner             — setiap modul pemeriksaan + engine orkestrasi
   tls.go                       versi protokol lama, cipher lemah, certificate (ClientHello mentah)
   session.go                   session ID/flag/lifetime/scope + fixation
   payload_mutation.go          deteksi WAF + mutasi payload (encoding/obfuscation)
+  context_aware.go             fuzzing sadar-konteks (file→traversal, id→IDOR, email→header, url→open redirect)
   ssti.go                      template injection (aritmatika + fingerprint engine)
   xxe.go + oob.go              XML external entity + listener callback OOB
   deserialization.go           signature serialized object + konfirmasi sleep
@@ -512,6 +544,7 @@ Fitur-fitur berikut yang sebelumnya direncanakan **sudah selesai diimplementasik
 25. **Subdomain takeover** — penelusuran rantai CNAME (anti-loop, 8 hop) terhadap tabel 31 penyedia, dengan verifikasi halaman error spesifik penyedia sehingga CNAME menggantung saja tidak dilaporkan. Read-only: tidak pernah mencoba mengklaim resource.
 26. **SSL/TLS testing** — deteksi SSLv3/TLS 1.0/1.1 lewat ClientHello mentah, enumerasi cipher suite lemah (NULL/EXPORT/RC4/DES/3DES) satu per satu, dan analisis certificate (kedaluwarsa, nama tidak cocok, chain tidak tepercaya, MD5/SHA-1, kunci lemah). Heartbleed sengaja tidak diuji karena konfirmasinya destruktif.
 27. **Export ke format standar** — exporter JSON, CSV (RFC 4180), dan SARIF 2.1.0 dengan pemetaan severity→level, fingerprint per temuan, dan deteksi format otomatis dari ekstensi `-out`.
+28. **Context-aware fuzzing** — klasifikasi jenis tiap parameter dari nama/nilai (`file`/`path` → path traversal dengan verifikasi isi file, `id` numerik → IDOR dengan kontrol id-tidak-ada, `email` → header/CRLF injection, `redirect`/`url` → open redirect via host canary), hanya mengirim probe yang relevan untuk tiap konteks. Non-destruktif (GET/HEAD saja) dan aktif secara default.
 
 Setiap fitur sudah diuji production-ready: boolean-blind dan time-based SQLi divalidasi hingga terbukti saling tidak kontaminasi silang, konfirmasi XSS divalidasi dengan Chrome sungguhan hingga benar-benar mengeksekusi script yang disuntik, deteksi pustaka JS diuji dengan 11 skenario, resolver OpenAPI diuji dengan dokumen yang memakai `$ref` bersarang di dalam `allOf`, dan fitur API security baru divalidasi dengan skenario real-world (mass assignment detection tested dengan 23 protected fields, rate limiting dengan concurrent burst testing, API versioning dengan multi-version detection logic). Exporter output juga divalidasi struktural: JSON/CSV di-parse ulang dan SARIF 2.1.0 dicek memiliki `$schema`, `version`, `tool.driver`, `invocations`, `rules`, serta `partialFingerprints` yang konsisten antar-run.
 
@@ -520,8 +553,6 @@ Setiap fitur sudah diuji production-ready: boolean-blind dan time-based SQLi div
 Arah perluasan yang masih masuk akal untuk meningkatkan kemampuan SSGhost666:
 
 #### Smart Fuzzing & AI
-
-- **Context-aware fuzzing** — analisis parameter berdasarkan nama/tipe untuk memilih payload yang lebih relevan (parameter `email` → email injection payloads, `id` → IDOR/SQLi numeric, `file` → path traversal).
 
 - **Machine learning untuk false positive reduction** — model ML yang belajar dari historical scan results untuk membedakan true positive vs false positive berdasarkan response patterns, mengurangi manual verification.
 

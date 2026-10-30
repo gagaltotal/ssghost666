@@ -37,6 +37,11 @@ func main() {
 	}
 
 	checks := scanner.ParseChecks(cfg.Checks)
+	// -context-aware (default true) can turn the context-aware fuzzing category
+	// off even when -checks all (or an explicit list) would otherwise enable it.
+	if !cfg.ContextAware {
+		checks.ContextAware = false
+	}
 	term.Banner(options.Banner(), cfg.TargetURL, cfg.Depth, checksLabel(checks))
 	fmt.Fprintln(os.Stderr, "Only scan applications you own or are explicitly authorized to test.")
 
@@ -290,6 +295,7 @@ func main() {
 		BrowserConfirm: cfg.JSRender,
 		DOMXSSCheck:    cfg.DOMXSSCheck,
 		MutatePayload:  cfg.MutatePayload,
+		ContextAware:   cfg.ContextAware,
 		BearerToken:    cfg.Bearer,
 		ChromePath:     cfg.ChromePath,
 		TLSVerify:      !cfg.Insecure,
@@ -331,6 +337,7 @@ func main() {
 func checksLabel(e scanner.Enabled) string {
 	if e.SQLi && e.XSS && e.CmdI && e.SSRF && e.Auth && e.Passive &&
 		e.SSTI && e.XXE && e.Deser && e.GraphQL && e.WebSocket && e.BlindXSS &&
+		e.ContextAware &&
 		e.JWT && e.OAuth && e.Session &&
 		e.SSO && e.Cloud && e.Subdomain && e.TLS {
 		return "all"
@@ -340,7 +347,8 @@ func checksLabel(e scanner.Enabled) string {
 		"sqli": e.SQLi, "xss": e.XSS, "cmdi": e.CmdI, "ssrf": e.SSRF,
 		"auth": e.Auth, "passive": e.Passive, "ssti": e.SSTI, "xxe": e.XXE,
 		"deser": e.Deser, "graphql": e.GraphQL, "websocket": e.WebSocket,
-		"blindxss": e.BlindXSS, "jwt": e.JWT, "oauth": e.OAuth, "session": e.Session,
+		"blindxss": e.BlindXSS, "contextaware": e.ContextAware,
+		"jwt": e.JWT, "oauth": e.OAuth, "session": e.Session,
 		"sso": e.SSO, "cloud": e.Cloud, "subdomain": e.Subdomain, "tls": e.TLS,
 	} {
 		if v {
