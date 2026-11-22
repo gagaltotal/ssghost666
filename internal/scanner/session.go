@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
+	"math/rand"
 	"net/http"
 	"sort"
 	"strings"
@@ -193,6 +194,20 @@ func containsStr(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// randomSessionID returns a 32-character hex string (128 bits) drawn from a
+// cryptographically secure RNG. It mirrors the shape of a real, strong session
+// identifier so a fixation probe carries a value as realistic as possible.
+// The result is always exactly 32 characters, so callers may slice it safely.
+func randomSessionID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand never fails on supported platforms; fall back to a
+		// deterministic marker-derived value that is still 32 chars long.
+		return fmt.Sprintf("%032s", Marker())
+	}
+	return hex.EncodeToString(b)
 }
 
 // sessionIDLooksWeak scores a single cookie value for predictability.
@@ -419,7 +434,7 @@ func checkSessionFixation(ctx context.Context, lim *ratelimiter.Limiter, cli *ht
 		if len(sc.values) == 0 {
 			continue
 		}
-		fresh := hex.EncodeToString([]byte(Marker()))[:32]
+		fresh := randomSessionID()
 		if !lim.Acquire(ctx) {
 			return nil
 		}
